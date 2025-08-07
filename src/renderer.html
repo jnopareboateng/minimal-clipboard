@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Minimal Clipboard</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: rgba(20, 20, 20, 0.95);
+      backdrop-filter: blur(10px);
+      color: #ffffff;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .header {
+      padding: 12px 16px;
+      background: rgba(40, 40, 40, 0.8);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .title {
+      font-size: 12px;
+      font-weight: 500;
+      color: #aaaaaa;
+    }
+
+    .hotkey {
+      font-size: 11px;
+      color: #666666;
+      background: rgba(255, 255, 255, 0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .clear-btn {
+      background: none;
+      border: none;
+      color: #666666;
+      cursor: pointer;
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+
+    .clear-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: #aaaaaa;
+    }
+
+    .clipboard-list {
+      max-height: 450px;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+    }
+
+    .clipboard-list::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .clipboard-list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .clipboard-list::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.3);
+      border-radius: 3px;
+    }
+
+    .clipboard-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      position: relative;
+    }
+
+    .clipboard-item:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .clipboard-item:active {
+      background: rgba(255, 255, 255, 0.12);
+      transform: scale(0.995);
+    }
+
+    .clipboard-text {
+      font-size: 13px;
+      line-height: 1.4;
+      color: #ffffff;
+      word-break: break-word;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .clipboard-time {
+      font-size: 10px;
+      color: #666666;
+      margin-top: 4px;
+    }
+
+    .empty-state {
+      padding: 40px 16px;
+      text-align: center;
+      color: #666666;
+    }
+
+    .empty-icon {
+      font-size: 24px;
+      margin-bottom: 8px;
+      opacity: 0.5;
+    }
+
+    .empty-text {
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">Clipboard History</div>
+    <div>
+      <span class="hotkey" id="hotkey-display">Ctrl+Shift+V</span>
+      <button class="clear-btn" onclick="clearHistory()">Clear</button>
+    </div>
+  </div>
+
+  <div class="clipboard-list" id="clipboard-list">
+    <div class="empty-state">
+      <div class="empty-icon">📋</div>
+      <div class="empty-text">Your clipboard history will appear here</div>
+    </div>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+
+    // Format time ago
+    function timeAgo(timestamp) {
+      const now = Date.now();
+      const diff = now - timestamp;
+      
+      if (diff < 60000) return 'Just now';
+      if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+      if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+      return Math.floor(diff / 86400000) + 'd ago';
+    }
+
+    // Render clipboard items
+    function renderClipboard(items) {
+      const list = document.getElementById('clipboard-list');
+      
+      if (!items || items.length === 0) {
+        list.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">📋</div>
+            <div class="empty-text">Your clipboard history will appear here</div>
+          </div>
+        `;
+        return;
+      }
+
+      list.innerHTML = items.map(item => `
+        <div class="clipboard-item" onclick="pasteItem('${item.text.replace(/'/g, '\\\'').replace(/\n/g, '\\n')}')">
+          <div class="clipboard-text">${item.text.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+          <div class="clipboard-time">${timeAgo(item.timestamp)}</div>
+        </div>
+      `).join('');
+    }
+
+    // Paste item
+    async function pasteItem(text) {
+      const unescapedText = text.replace(/\\'/g, "'").replace(/\\n/g, '\n');
+      await ipcRenderer.invoke('paste-item', unescapedText);
+    }
+
+    // Clear history
+    async function clearHistory() {
+      await ipcRenderer.invoke('clear-history');
+    }
+
+    // Set platform-specific hotkey display
+    async function setPlatformHotkey() {
+      const platform = await ipcRenderer.invoke('get-platform');
+      const hotkeyDisplay = document.getElementById('hotkey-display');
+      
+      if (platform === 'darwin') {
+        hotkeyDisplay.textContent = '⌘⇧V';
+      } else if (platform === 'win32') {
+        hotkeyDisplay.textContent = 'Win+V';
+      } else {
+        hotkeyDisplay.textContent = 'Ctrl+Shift+V';
+      }
+    }
+
+    // Listen for clipboard updates
+    ipcRenderer.on('clipboard-updated', (event, items) => {
+      renderClipboard(items);
+    });
+
+    // Initialize
+    setPlatformHotkey();
+  </script>
+</body>
+</html>
