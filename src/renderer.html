@@ -177,18 +177,21 @@
       }
 
       list.innerHTML = items.map(item => `
-        <div class="clipboard-item" onclick="pasteItem('${item.text.replace(/'/g, '\\\'').replace(/\n/g, '\\n')}')">
+        <div class="clipboard-item" data-text="${item.text.replace(/"/g, '&quot;')}">
           <div class="clipboard-text">${item.text.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
           <div class="clipboard-time">${timeAgo(item.timestamp)}</div>
         </div>
       `).join('');
     }
 
-    // Paste item
-    async function pasteItem(text) {
-      const unescapedText = text.replace(/\\'/g, "'").replace(/\\n/g, '\n');
-      await ipcRenderer.invoke('paste-item', unescapedText);
-    }
+    // Attach a single click listener using event delegation
+    document.getElementById('clipboard-list').addEventListener('click', (e) => {
+      const itemEl = e.target.closest('.clipboard-item');
+      if (!itemEl) return;
+      const txt = itemEl.dataset.text;
+      console.log('Renderer: item clicked, text:', txt);
+      ipcRenderer.invoke('paste-item', txt);
+    });
 
     // Clear history
     async function clearHistory() {
