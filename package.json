@@ -17,17 +17,20 @@
     "electron",
     "cross-platform"
   ],
-  "author": "Your Name",
+  "author": "Joshua Opare-Boateng",
   "license": "MIT",
   "devDependencies": {
     "electron": "^27.0.0",
-    "electron-builder": "^24.6.4"
+    "electron-builder": "^24.6.4",
+    "electron-rebuild": "^3.2.9"
   },
   "dependencies": {
-    "electron-store": "^8.1.0"
+    "active-win": "^8.2.1",
+    "electron-store": "^8.1.0",
+    "robotjs": "^0.6.0"
   },
   "build": {
-    "appId": "com.yourname.minimal-clipboard",
+    "appId": "com.jnopareboateng.minimal-clipboard",
     "productName": "Minimal Clipboard",
     "directories": {
       "output": "dist"
