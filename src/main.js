@@ -215,9 +215,10 @@ const createWindow = () => {
     transparent: true,
     // Allow the window to be focusable so that clicking outside triggers a blur event.
     // We'll show it without focusing (showInactive) to keep the previous app active on open.
-    focusable: true,
+  focusable: true,
     movable: true,
   acceptFirstMouse: true,
+  icon: path.join(__dirname, '..', 'build', 'icons', 'icon.png'),
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
