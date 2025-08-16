@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Minimal Clipboard</title>
+  <title>Clipboard History</title>
   <style>
     * {
       margin: 0;
@@ -28,12 +28,28 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      -webkit-app-region: drag;
+      -webkit-user-select: none;
+      user-select: none;
+      position: relative;
+      z-index: 0;
+    }
+
+    .actions {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: max-content;
+      gap: 8px;
+      align-items: center;
+      -webkit-app-region: no-drag;
+      width: 100%;
     }
 
     .title {
       font-size: 12px;
       font-weight: 500;
       color: #aaaaaa;
+      flex-shrink: 0;
     }
 
     .hotkey {
@@ -42,6 +58,7 @@
       background: rgba(255, 255, 255, 0.1);
       padding: 2px 6px;
       border-radius: 4px;
+      -webkit-app-region: no-drag;
     }
 
     .clear-btn {
@@ -53,6 +70,7 @@
       padding: 4px 8px;
       border-radius: 4px;
       transition: all 0.2s;
+      -webkit-app-region: no-drag;
     }
 
     .clear-btn:hover {
@@ -60,11 +78,35 @@
       color: #aaaaaa;
     }
 
+    .icon-btn {
+      background: none;
+      border: none;
+      color: #cccccc;
+      cursor: pointer;
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border-radius: 4px;
+      -webkit-app-region: no-drag;
+      transition: all 0.2s;
+      font-size: 16px;
+      line-height: 1;
+    }
+
+    .icon-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: #ffffff;
+    }
+
     .clipboard-list {
       max-height: 450px;
       overflow-y: auto;
       scrollbar-width: thin;
       scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+      -webkit-app-region: no-drag;
+      position: relative;
+      z-index: 0;
     }
 
     .clipboard-list::-webkit-scrollbar {
@@ -86,6 +128,16 @@
       cursor: pointer;
       transition: all 0.15s ease;
       position: relative;
+      -webkit-app-region: no-drag;
+    }
+
+    .clipboard-thumb {
+      display: block;
+      max-width: 100%;
+      max-height: 140px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.06) inset;
     }
 
     .clipboard-item:hover {
@@ -102,6 +154,7 @@
       line-height: 1.4;
       color: #ffffff;
       word-break: break-word;
+      line-clamp: 3;
       display: -webkit-box;
       -webkit-line-clamp: 3;
       -webkit-box-orient: vertical;
@@ -130,14 +183,26 @@
     .empty-text {
       font-size: 12px;
     }
+
+    /* While modal is open, disable interactions below and ensure no drag region interferes */
+    body.modal-open .header,
+    body.modal-open .clipboard-list {
+      pointer-events: none;
+      -webkit-app-region: no-drag;
+    }
+
+    /* Remove backdrop filter when modal is open to prevent stacking context issues */
+    body.modal-open {
+      backdrop-filter: none;
+    }
   </style>
 </head>
 <body>
   <div class="header">
-    <div class="title">Clipboard History</div>
-    <div>
+    <div class="actions">
+      <input type="text" id="search" placeholder="Search..." style="height:22px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.2);color:#ddd;min-width:140px;">
       <span class="hotkey" id="hotkey-display">Ctrl+Shift+V</span>
-      <button class="clear-btn" onclick="clearHistory()">Clear</button>
+      <button class="icon-btn" onclick="openSettings()" title="Settings" aria-label="Settings">⚙</button>
     </div>
   </div>
 
@@ -148,14 +213,52 @@
     </div>
   </div>
 
+  <!-- Settings Modal -->
+  <div id="settings-modal" style="position:fixed;inset:0;display:none;align-items:flex-start;justify-content:center;background:rgba(0,0,0,0.5);-webkit-app-region:no-drag;overflow:auto;z-index:999999;">
+    <div style="width:340px;background:#222;border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:16px;color:#ddd;margin:40px 0;position:relative;z-index:1000000;">
+      <div style="font-size:13px;margin-bottom:8px;color:#aaa;">Settings</div>
+      <label style="display:block;font-size:12px;margin:8px 0 4px;">Max history</label>
+      <input id="set-max-history" type="number" min="5" max="200" step="1" style="width:100%;height:28px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;">
+      <label style="display:block;font-size:12px;margin:8px 0 4px;">Thumbnail width (px)</label>
+      <input id="set-thumb-width" type="number" min="60" max="600" step="10" style="width:100%;height:28px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;">
+      <label style="display:block;font-size:12px;margin:8px 0 4px;">Single-click action</label>
+      <select id="set-single-click" style="width:100%;height:28px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;">
+        <option value="copy">Copy</option>
+        <option value="paste">Paste</option>
+        <option value="none">None</option>
+      </select>
+      <label style="display:block;font-size:12px;margin:8px 0 4px;">
+        <input id="set-remember-pos" type="checkbox"> Remember window position
+      </label>
+      <label style="display:block;font-size:12px;margin:8px 0 4px;">Hotkey</label>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <input id="set-hotkey" type="text" readonly placeholder="Click to set hotkey" style="flex:1;height:28px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;cursor:pointer;">
+        <button id="reset-hotkey" type="button" style="height:28px;padding:0 12px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#333;color:#ddd;cursor:pointer;font-size:11px;">Reset</button>
+      </div>
+      <div id="hotkey-help" style="font-size:10px;color:#666;margin-top:2px;">Default: <span id="default-hotkey">Ctrl+Shift+V</span></div>
+       
+       <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);">
+         <div style="font-size:11px;color:#888;margin-bottom:4px;">Data Storage Location:</div>
+         <div id="data-location" style="font-size:10px;color:#666;word-break:break-all;background:#111;padding:4px 6px;border-radius:3px;font-family:monospace;">Loading...</div>
+       </div>
+       
+       <button class="clear-btn" onclick="clearHistory(); closeSettings();" style="margin-top:12px;color:#ff6b6b;">Clear history</button>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;position:sticky;bottom:0;background:#222;padding-top:8px;">
+        <button class="clear-btn" onclick="closeSettings()">Cancel</button>
+        <button class="clear-btn" onclick="saveSettings()">Save</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const { ipcRenderer } = require('electron');
+    let settings = null;
+    let allItems = [];
 
     // Format time ago
     function timeAgo(timestamp) {
       const now = Date.now();
       const diff = now - timestamp;
-      
       if (diff < 60000) return 'Just now';
       if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
       if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
@@ -165,7 +268,6 @@
     // Render clipboard items
     function renderClipboard(items) {
       const list = document.getElementById('clipboard-list');
-      
       if (!items || items.length === 0) {
         list.innerHTML = `
           <div class="empty-state">
@@ -175,50 +277,245 @@
         `;
         return;
       }
-
-      list.innerHTML = items.map(item => `
-        <div class="clipboard-item" data-text="${item.text.replace(/"/g, '&quot;')}">
-          <div class="clipboard-text">${item.text.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
-          <div class="clipboard-time">${timeAgo(item.timestamp)}</div>
-        </div>
-      `).join('');
+      list.innerHTML = items.map(item => {
+        if (item.type === 'image') {
+          const dims = item.width && item.height ? `${item.width}×${item.height}` : '';
+          return `
+            <div class="clipboard-item" data-type="image" data-id="${item.id}">
+              <img class="clipboard-thumb" src="${item.thumbDataUrl}" alt="Image clipboard item" />
+              <div class="clipboard-time">${dims ? dims + ' • ' : ''}${timeAgo(item.timestamp)}</div>
+            </div>
+          `;
+        } else {
+          const safeText = (item.text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          const dataAttr = (item.text || '').replace(/"/g, '&quot;');
+          return `
+            <div class="clipboard-item" data-type="text" data-text="${dataAttr}">
+              <div class="clipboard-text">${safeText}</div>
+              <div class="clipboard-time">${timeAgo(item.timestamp)}</div>
+            </div>
+          `;
+        }
+      }).join('');
     }
 
-    // Attach a single click listener using event delegation
-    document.getElementById('clipboard-list').addEventListener('click', (e) => {
+    // Single-click = copy to clipboard; Double-click = paste into active field
+    const listEl = document.getElementById('clipboard-list');
+    let clickTimer = null;
+    const clickDelayMs = 220; // delay to distinguish double-click
+
+    function handleCopy(itemEl) {
+      const type = itemEl.dataset.type;
+      if (type === 'image') {
+        const id = itemEl.dataset.id;
+        ipcRenderer.invoke('copy-item', { type: 'image', id });
+      } else {
+        const txt = itemEl.dataset.text;
+        ipcRenderer.invoke('copy-item', { type: 'text', text: txt });
+      }
+    }
+
+    function handlePaste(itemEl) {
+      const type = itemEl.dataset.type;
+      if (type === 'image') {
+        const id = itemEl.dataset.id;
+        ipcRenderer.invoke('paste-item', { type: 'image', id });
+      } else {
+        const txt = itemEl.dataset.text;
+        ipcRenderer.invoke('paste-item', { type: 'text', text: txt });
+      }
+    }
+
+    listEl.addEventListener('click', (e) => {
       const itemEl = e.target.closest('.clipboard-item');
       if (!itemEl) return;
-      const txt = itemEl.dataset.text;
-      console.log('Renderer: item clicked, text:', txt);
-      ipcRenderer.invoke('paste-item', txt);
+      if (clickTimer) return; // wait for potential dblclick
+      clickTimer = setTimeout(() => {
+        if (settings && settings.singleClickAction === 'paste') {
+          handlePaste(itemEl);
+        } else if (settings && settings.singleClickAction === 'copy') {
+          handleCopy(itemEl);
+        }
+        clickTimer = null;
+      }, clickDelayMs);
     });
+
+    listEl.addEventListener('dblclick', (e) => {
+      const itemEl = e.target.closest('.clipboard-item');
+      if (!itemEl) return;
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      handlePaste(itemEl);
+    });
+
+    // Search
+    const searchEl = document.getElementById('search');
+    function applySearch() {
+      const q = (searchEl.value || '').toLowerCase().trim();
+      if (!q) {
+        renderClipboard(allItems);
+        return;
+      }
+      const filtered = allItems.filter(it => {
+        if (it.type === 'text') return (it.text || '').toLowerCase().includes(q);
+        const dims = `${it.width || ''}x${it.height || ''}`;
+        return dims.includes(q);
+      });
+      renderClipboard(filtered);
+    }
+    searchEl.addEventListener('input', applySearch);
 
     // Clear history
     async function clearHistory() {
       await ipcRenderer.invoke('clear-history');
     }
 
-    // Set platform-specific hotkey display
+    // Show currently effective hotkey
     async function setPlatformHotkey() {
-      const platform = await ipcRenderer.invoke('get-platform');
-      const hotkeyDisplay = document.getElementById('hotkey-display');
-      
-      if (platform === 'darwin') {
-        hotkeyDisplay.textContent = '⌘⇧V';
-      } else if (platform === 'win32') {
-        hotkeyDisplay.textContent = 'Win+V';
-      } else {
-        hotkeyDisplay.textContent = 'Ctrl+Shift+V';
-      }
+      const hotkey = await ipcRenderer.invoke('get-hotkey');
+      document.getElementById('hotkey-display').textContent = hotkey || 'Ctrl+Shift+V';
     }
 
     // Listen for clipboard updates
     ipcRenderer.on('clipboard-updated', (event, items) => {
-      renderClipboard(items);
+      allItems = items || [];
+      applySearch();
+    });
+
+    // Reset UI on overlay open: clear search and close settings
+    ipcRenderer.on('reset-ui', () => {
+      const searchEl = document.getElementById('search');
+      if (searchEl.value) {
+        searchEl.value = '';
+      }
+      document.getElementById('settings-modal').style.display = 'none';
+      document.body.classList.remove('modal-open');
+      renderClipboard(allItems);
+      
+      // Focus search input for immediate typing
+      setTimeout(() => {
+        searchEl.focus();
+        // Ensure the input is selected for immediate typing
+        searchEl.select();
+      }, 200);
     });
 
     // Initialize
     setPlatformHotkey();
+    // Load settings
+    async function loadSettings() {
+      settings = await ipcRenderer.invoke('get-settings');
+      const platform = await ipcRenderer.invoke('get-platform');
+      const dataLocation = await ipcRenderer.invoke('get-data-location');
+      
+      document.getElementById('set-max-history').value = settings.maxHistory;
+      document.getElementById('set-thumb-width').value = settings.thumbWidth;
+      document.getElementById('set-single-click').value = settings.singleClickAction || 'copy';
+      document.getElementById('set-remember-pos').checked = !!settings.rememberPosition;
+      
+      // Set platform-specific default hotkey
+      const defaultHotkey = platform === 'darwin' ? 'Cmd+Shift+V' : 'Ctrl+Shift+V';
+      document.getElementById('default-hotkey').textContent = defaultHotkey;
+      
+      // Show current hotkey or default
+      const currentHotkey = await ipcRenderer.invoke('get-hotkey');
+      document.getElementById('set-hotkey').value = currentHotkey;
+      document.getElementById('set-hotkey').placeholder = `Click to set (default: ${defaultHotkey})`;
+      
+      // Show data storage location
+      document.getElementById('data-location').textContent = dataLocation;
+    }
+    loadSettings();
+
+    // Hotkey capture functionality
+    let isCapturingHotkey = false;
+    const hotkeyInput = document.getElementById('set-hotkey');
+    const resetHotkeyBtn = document.getElementById('reset-hotkey');
+    
+    hotkeyInput.addEventListener('click', () => {
+      if (isCapturingHotkey) return;
+      isCapturingHotkey = true;
+      hotkeyInput.value = 'Press keys...';
+      hotkeyInput.style.background = '#2a4a2a';
+    });
+    
+    hotkeyInput.addEventListener('keydown', (e) => {
+      if (!isCapturingHotkey) return;
+      e.preventDefault();
+      
+      const keys = [];
+      if (e.ctrlKey || e.metaKey) keys.push(e.metaKey ? 'Cmd' : 'Ctrl');
+      if (e.altKey) keys.push('Alt');
+      if (e.shiftKey) keys.push('Shift');
+      
+      // Only allow valid keys for Electron globalShortcut
+      const validKeys = {
+        'Enter': 'Return',
+        ' ': 'Space',
+        'ArrowUp': 'Up',
+        'ArrowDown': 'Down',
+        'ArrowLeft': 'Left',
+        'ArrowRight': 'Right'
+      };
+      
+      if (e.key && !['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) {
+        let keyName = e.key;
+        
+        // Map special keys
+        if (validKeys[e.key]) {
+          keyName = validKeys[e.key];
+        } else if (e.key.length === 1) {
+          // Only allow single character keys (letters, numbers, symbols)
+          keyName = e.key.toUpperCase();
+        } else {
+          // Skip invalid keys
+          hotkeyInput.value = 'Invalid key combination';
+          setTimeout(() => {
+            hotkeyInput.value = 'Press keys...';
+          }, 1000);
+          return;
+        }
+        
+        keys.push(keyName);
+        
+        const hotkey = keys.join('+');
+        hotkeyInput.value = hotkey;
+        hotkeyInput.style.background = '#111';
+        isCapturingHotkey = false;
+      }
+    });
+    
+    resetHotkeyBtn.addEventListener('click', async () => {
+      const platform = await ipcRenderer.invoke('get-platform');
+      const defaultHotkey = platform === 'darwin' ? 'Cmd+Shift+V' : 'Ctrl+Shift+V';
+      hotkeyInput.value = defaultHotkey;
+      hotkeyInput.style.background = '#111';
+      isCapturingHotkey = false;
+    });
+
+    // Settings modal controls
+    window.openSettings = function() {
+      const modal = document.getElementById('settings-modal');
+      modal.style.display = 'flex';
+      modal.scrollTop = 0; // ensure top is visible even when search scrolled the list
+      document.body.classList.add('modal-open');
+    }
+    window.closeSettings = function() {
+      document.getElementById('settings-modal').style.display = 'none';
+      document.body.classList.remove('modal-open');
+    }
+    window.saveSettings = async function() {
+      const partial = {
+        maxHistory: Number(document.getElementById('set-max-history').value),
+        thumbWidth: Number(document.getElementById('set-thumb-width').value),
+        singleClickAction: document.getElementById('set-single-click').value,
+        rememberPosition: document.getElementById('set-remember-pos').checked,
+        hotkey: (document.getElementById('set-hotkey').value || '').trim() || null
+      };
+      settings = await ipcRenderer.invoke('update-settings', partial);
+      const hotkey = await ipcRenderer.invoke('get-hotkey');
+      document.getElementById('hotkey-display').textContent = hotkey || 'Ctrl+Shift+V';
+      closeSettings();
+    }
   </script>
 </body>
 </html>
