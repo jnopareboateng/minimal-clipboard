@@ -11,6 +11,7 @@
     "build:linux": "electron-builder --linux",
     "dev": "electron . --dev"
   },
+  "postinstall": "electron-builder install-app-deps",
   "keywords": [
     "clipboard",
     "productivity",
@@ -20,9 +21,12 @@
   "author": "Joshua Opare-Boateng",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^27.0.0",
-    "electron-builder": "^24.6.4",
-    "electron-rebuild": "^3.2.9"
+  "electron": "^27.0.0",
+  "electron-builder": "^24.13.3",
+  "electron-icon-maker": "^0.0.5",
+  "electron-rebuild": "^3.2.9",
+  "prebuild-install": "^7.0.0",
+  "node-abi": "^3.8.0"
   },
   "dependencies": {
     "active-win": "^8.2.1",
@@ -39,6 +43,7 @@
       "src/**/*",
       "node_modules/**/*"
     ],
+    "icon": "build/icons/icon",
     "mac": {
       "category": "public.app-category.productivity"
     },
