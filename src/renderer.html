@@ -107,10 +107,23 @@
       -webkit-app-region: no-drag;
       position: relative;
       z-index: 0;
+      /* Smooth scrolling optimizations */
+      scroll-behavior: smooth;
+      will-change: scroll-position;
+      /* GPU acceleration for better scrolling */
+      transform: translateZ(0);
+      backface-visibility: hidden;
+      /* Prevent layout shifts during scrolling */
+      contain: layout style paint;
+      /* Additional scroll optimizations */
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+      /* Better momentum on macOS */
+      -webkit-momentum-scrolling: auto;
     }
 
     .clipboard-list::-webkit-scrollbar {
-      width: 6px;
+      width: 8px;
     }
 
     .clipboard-list::-webkit-scrollbar-track {
@@ -119,7 +132,20 @@
 
     .clipboard-list::-webkit-scrollbar-thumb {
       background: rgba(255, 255, 255, 0.3);
-      border-radius: 3px;
+      border-radius: 4px;
+      transition: background-color 0.2s ease;
+    }
+
+    .clipboard-list::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.5);
+    }
+
+    /* Firefox smooth scrolling fallback */
+    @supports (-moz-appearance: none) {
+      .clipboard-list {
+        scroll-behavior: smooth;
+        -moz-scroll-behavior: smooth;
+      }
     }
 
     .clipboard-item {
@@ -142,11 +168,15 @@
 
     .clipboard-item:hover {
       background: rgba(255, 255, 255, 0.08);
+      /* Use transform for better performance */
+      transform: translateY(-1px);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
     }
 
     .clipboard-item:active {
       background: rgba(255, 255, 255, 0.12);
-      transform: scale(0.995);
+      transform: translateY(0) scale(0.99);
+      transition: transform 0.1s ease, background-color 0.1s ease;
     }
 
     .clipboard-text {
@@ -265,9 +295,10 @@
       return Math.floor(diff / 86400000) + 'd ago';
     }
 
-    // Render clipboard items
+    // Render clipboard items with optimized performance
     function renderClipboard(items) {
       const list = document.getElementById('clipboard-list');
+
       if (!items || items.length === 0) {
         list.innerHTML = `
           <div class="empty-state">
@@ -277,29 +308,50 @@
         `;
         return;
       }
-      list.innerHTML = items.map(item => {
+
+      // Use document fragment for better performance
+      const fragment = document.createDocumentFragment();
+      const scrollTop = list.scrollTop; // Preserve scroll position
+
+      items.forEach(item => {
+        const itemDiv = document.createElement('div');
+        itemDiv.className = 'clipboard-item';
+        itemDiv.style.willChange = 'auto'; // Optimize for performance
+
         if (item.type === 'image') {
           const dims = item.width && item.height ? `${item.width}×${item.height}` : '';
-          return `
-            <div class="clipboard-item" data-type="image" data-id="${item.id}">
-              <img class="clipboard-thumb" src="${item.thumbDataUrl}" alt="Image clipboard item" />
-              <div class="clipboard-time">${dims ? dims + ' • ' : ''}${timeAgo(item.timestamp)}</div>
-            </div>
+          itemDiv.setAttribute('data-type', 'image');
+          itemDiv.setAttribute('data-id', item.id);
+          itemDiv.innerHTML = `
+            <img class="clipboard-thumb" src="${item.thumbDataUrl}" alt="Image clipboard item" loading="lazy" />
+            <div class="clipboard-time">${dims ? dims + ' • ' : ''}${timeAgo(item.timestamp)}</div>
           `;
         } else {
           const safeText = (item.text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
           const dataAttr = (item.text || '').replace(/"/g, '&quot;');
-          return `
-            <div class="clipboard-item" data-type="text" data-text="${dataAttr}">
-              <div class="clipboard-text">${safeText}</div>
-              <div class="clipboard-time">${timeAgo(item.timestamp)}</div>
-            </div>
+          itemDiv.setAttribute('data-type', 'text');
+          itemDiv.setAttribute('data-text', dataAttr);
+          itemDiv.innerHTML = `
+            <div class="clipboard-text">${safeText}</div>
+            <div class="clipboard-time">${timeAgo(item.timestamp)}</div>
           `;
         }
-      }).join('');
+
+        fragment.appendChild(itemDiv);
+      });
+
+      // Clear and append in one operation for better performance
+      list.innerHTML = '';
+      list.appendChild(fragment);
+
+      // Restore scroll position
+      list.scrollTop = scrollTop;
+
+      // Force reflow to ensure smooth rendering
+      list.offsetHeight;
     }
 
-    // Single-click = copy to clipboard; Double-click = paste into active field
+    // Optimized event handling with event delegation
     const listEl = document.getElementById('clipboard-list');
     let clickTimer = null;
     const clickDelayMs = 220; // delay to distinguish double-click
@@ -326,10 +378,14 @@
       }
     }
 
+    // Use event delegation for better performance
     listEl.addEventListener('click', (e) => {
       const itemEl = e.target.closest('.clipboard-item');
       if (!itemEl) return;
-      if (clickTimer) return; // wait for potential dblclick
+
+      // Prevent multiple rapid clicks
+      if (clickTimer) return;
+
       clickTimer = setTimeout(() => {
         if (settings && settings.singleClickAction === 'paste') {
           handlePaste(itemEl);
@@ -338,17 +394,22 @@
         }
         clickTimer = null;
       }, clickDelayMs);
-    });
+    }, { passive: true }); // Use passive listener for better scroll performance
 
     listEl.addEventListener('dblclick', (e) => {
       const itemEl = e.target.closest('.clipboard-item');
       if (!itemEl) return;
-      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      if (clickTimer) {
+        clearTimeout(clickTimer);
+        clickTimer = null;
+      }
       handlePaste(itemEl);
-    });
+    }, { passive: true });
 
-    // Search
+    // Search with debouncing for smooth performance
     const searchEl = document.getElementById('search');
+    let searchTimeout = null;
+
     function applySearch() {
       const q = (searchEl.value || '').toLowerCase().trim();
       if (!q) {
@@ -362,7 +423,20 @@
       });
       renderClipboard(filtered);
     }
-    searchEl.addEventListener('input', applySearch);
+
+    function debouncedSearch() {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(applySearch, 150); // 150ms debounce
+    }
+
+    searchEl.addEventListener('input', debouncedSearch);
+    // Also handle immediate search on Enter for better UX
+    searchEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        clearTimeout(searchTimeout);
+        applySearch();
+      }
+    });
 
     // Clear history
     async function clearHistory() {
