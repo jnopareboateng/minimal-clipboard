@@ -1,6 +1,6 @@
 {
   "name": "minimal-clipboard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A minimalist cross-platform clipboard manager",
   "main": "src/main.js",
   "scripts": {
@@ -9,7 +9,11 @@
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
-    "dev": "electron . --dev"
+    "build:all": "electron-builder --mac --win --linux",
+    "dev": "electron . --dev",
+    "release:patch": "npm version patch && git push && git push --tags",
+    "release:minor": "npm version minor && git push && git push --tags",
+    "release:major": "npm version major && git push && git push --tags"
   },
   "keywords": [
     "clipboard",
@@ -37,17 +41,41 @@
     },
     "files": [
       "src/**/*",
+      "assets/**/*",
       "node_modules/**/*"
     ],
     "mac": {
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "extendInfo": {
+        "LSUIElement": "1"
+      },
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "properties": {
+        "CreateDesktopShortcut": false,
+        "CreateStartMenuShortcut": false
+      }
     },
     "linux": {
       "target": "AppImage",
-      "category": "Utility"
+      "category": "Utility",
+      "synopsis": "Minimal Clipboard Manager",
+      "description": "A minimalist cross-platform clipboard manager that runs in the background"
+    },
+    "nsis": {
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": false,
+      "include": "build/installer.nsh"
     }
   }
 }
