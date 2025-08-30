@@ -36,6 +36,7 @@
   "build": {
     "appId": "com.jnopareboateng.minimal-clipboard",
     "productName": "Minimal Clipboard",
+    "icon": "src/icon.png",
     "directories": {
       "output": "dist"
     },
