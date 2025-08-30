@@ -122,6 +122,18 @@
       -webkit-momentum-scrolling: auto;
     }
 
+    /* Virtual scrolling container */
+    .virtual-list {
+      position: relative;
+      min-height: 100%;
+    }
+
+    /* Spacer for virtual scrolling */
+    .virtual-spacer {
+      height: 0;
+      pointer-events: none;
+    }
+
     .clipboard-list::-webkit-scrollbar {
       width: 8px;
     }
@@ -152,9 +164,15 @@
       padding: 12px 16px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.05);
       cursor: pointer;
-      transition: all 0.15s ease;
+      transition: background-color 0.15s ease, transform 0.15s ease;
       position: relative;
       -webkit-app-region: no-drag;
+      /* Performance optimizations */
+      will-change: transform, background-color;
+      contain: layout style paint;
+      /* Prevent layout shifts */
+      min-height: 60px;
+      box-sizing: border-box;
     }
 
     .clipboard-thumb {
@@ -295,7 +313,21 @@
       return Math.floor(diff / 86400000) + 'd ago';
     }
 
-    // Render clipboard items with optimized performance
+    // Virtual scrolling configuration
+    const ITEM_HEIGHT = 70; // Approximate height of each clipboard item
+    const BUFFER_SIZE = 5; // Number of items to render outside visible area
+    let virtualScrollState = {
+      allItems: [],
+      visibleItems: [],
+      scrollTop: 0,
+      containerHeight: 450,
+      startIndex: 0,
+      endIndex: 0,
+      totalHeight: 0
+    };
+    let itemsChanged = false; // Flag to track when items have changed
+
+    // Render clipboard items with virtual scrolling for optimal performance
     function renderClipboard(items) {
       const list = document.getElementById('clipboard-list');
 
@@ -306,52 +338,188 @@
             <div class="empty-text">Your clipboard history will appear here</div>
           </div>
         `;
+        virtualScrollState.allItems = [];
+        itemsChanged = true;
         return;
       }
 
-      // Use document fragment for better performance
-      const fragment = document.createDocumentFragment();
-      const scrollTop = list.scrollTop; // Preserve scroll position
+      // Check if items actually changed to avoid unnecessary updates
+      const itemsChangedCheck = !virtualScrollState.allItems ||
+        virtualScrollState.allItems.length !== items.length ||
+        virtualScrollState.allItems.some((item, index) =>
+          !items[index] || item.id !== items[index].id || item.timestamp !== items[index].timestamp
+        );
 
-      items.forEach(item => {
-        const itemDiv = document.createElement('div');
-        itemDiv.className = 'clipboard-item';
-        itemDiv.style.willChange = 'auto'; // Optimize for performance
+      if (itemsChangedCheck) {
+        virtualScrollState.allItems = items;
+        virtualScrollState.totalHeight = items.length * ITEM_HEIGHT;
+        itemsChanged = true;
 
-        if (item.type === 'image') {
-          const dims = item.width && item.height ? `${item.width}×${item.height}` : '';
-          itemDiv.setAttribute('data-type', 'image');
-          itemDiv.setAttribute('data-id', item.id);
-          itemDiv.innerHTML = `
-            <img class="clipboard-thumb" src="${item.thumbDataUrl}" alt="Image clipboard item" loading="lazy" />
-            <div class="clipboard-time">${dims ? dims + ' • ' : ''}${timeAgo(item.timestamp)}</div>
+        // Initialize virtual scrolling container if not exists
+        if (!list.querySelector('.virtual-list')) {
+          list.innerHTML = `
+            <div class="virtual-list">
+              <div class="virtual-spacer"></div>
+              <div class="virtual-items"></div>
+            </div>
           `;
-        } else {
-          const safeText = (item.text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-          const dataAttr = (item.text || '').replace(/"/g, '&quot;');
-          itemDiv.setAttribute('data-type', 'text');
-          itemDiv.setAttribute('data-text', dataAttr);
-          itemDiv.innerHTML = `
-            <div class="clipboard-text">${safeText}</div>
-            <div class="clipboard-time">${timeAgo(item.timestamp)}</div>
-          `;
+          setupVirtualScroll();
         }
 
-        fragment.appendChild(itemDiv);
-      });
-
-      // Clear and append in one operation for better performance
-      list.innerHTML = '';
-      list.appendChild(fragment);
-
-      // Restore scroll position
-      list.scrollTop = scrollTop;
-
-      // Force reflow to ensure smooth rendering
-      list.offsetHeight;
+        // Update visible items only if items changed
+        updateVisibleItems();
+      }
     }
 
-    // Optimized event handling with event delegation
+    function setupVirtualScroll() {
+      const list = document.getElementById('clipboard-list');
+      const virtualList = list.querySelector('.virtual-list');
+      const spacer = list.querySelector('.virtual-spacer');
+
+      // Set spacer height to represent total content
+      spacer.style.height = virtualScrollState.totalHeight + 'px';
+
+      // Handle scroll events
+      list.addEventListener('scroll', (e) => {
+        virtualScrollState.scrollTop = e.target.scrollTop;
+        updateVisibleItems();
+      }, { passive: true });
+
+      // Initial setup
+      virtualScrollState.containerHeight = list.clientHeight;
+      updateVisibleItems();
+    }
+
+    function updateVisibleItems() {
+      const { allItems, scrollTop, containerHeight } = virtualScrollState;
+      if (!allItems.length) return;
+
+      // Calculate visible range with buffer
+      const startIndex = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - BUFFER_SIZE);
+      const visibleCount = Math.ceil(containerHeight / ITEM_HEIGHT) + (BUFFER_SIZE * 2);
+      const endIndex = Math.min(allItems.length, startIndex + visibleCount);
+
+      // Only update if range has changed significantly or items have changed
+      if (startIndex === virtualScrollState.startIndex && endIndex === virtualScrollState.endIndex && !itemsChanged) {
+        return;
+      }
+
+      virtualScrollState.startIndex = startIndex;
+      virtualScrollState.endIndex = endIndex;
+
+      const virtualItems = document.querySelector('.virtual-items');
+      const existingItems = virtualItems.children;
+      const fragment = document.createDocumentFragment();
+
+      // Calculate offset for positioning
+      const offsetY = startIndex * ITEM_HEIGHT;
+
+      // Incremental update: only recreate items that changed
+      const currentVisibleItems = [];
+
+      for (let i = startIndex; i < endIndex; i++) {
+        const item = allItems[i];
+        currentVisibleItems.push(item);
+
+        const itemDiv = createItemElement(item, i);
+        itemDiv.style.position = 'absolute';
+        itemDiv.style.top = ((i - startIndex) * ITEM_HEIGHT + offsetY) + 'px';
+        itemDiv.style.width = '100%';
+        itemDiv.style.transform = 'translateZ(0)'; // Force GPU acceleration
+        fragment.appendChild(itemDiv);
+      }
+
+      // Use requestAnimationFrame for smooth updates
+      requestAnimationFrame(() => {
+        // Clear and update visible items
+        virtualItems.innerHTML = '';
+        virtualItems.appendChild(fragment);
+
+        // Update spacer height
+        const spacer = document.querySelector('.virtual-spacer');
+        if (spacer) {
+          spacer.style.height = (allItems.length * ITEM_HEIGHT) + 'px';
+        }
+
+        // Reset change flag
+        itemsChanged = false;
+      });
+    }
+
+    function createItemElement(item, index) {
+      const itemDiv = document.createElement('div');
+      itemDiv.className = 'clipboard-item';
+      itemDiv.style.willChange = 'auto';
+      itemDiv.setAttribute('data-index', index);
+
+      if (item.type === 'image') {
+        const dims = item.width && item.height ? `${item.width}×${item.height}` : '';
+        itemDiv.setAttribute('data-type', 'image');
+        itemDiv.setAttribute('data-id', item.id);
+
+        // Create placeholder image for lazy loading
+        const img = document.createElement('img');
+        img.className = 'clipboard-thumb';
+        img.alt = 'Image clipboard item';
+        img.loading = 'lazy';
+
+        if (item.thumbDataUrl && item.thumbDataUrl.startsWith('data:')) {
+          // Already loaded thumbnail
+          img.src = item.thumbDataUrl;
+        } else if (item.thumbPath) {
+          // Lazy load thumbnail
+          img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjE0MCIgdmlld0JveD0iMCAwIDMyMCAxNDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIzMjAiIGhlaWdodD0iMTQwIiBmaWxsPSIjRjNGNEY2Ii8+Cjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMTQiIGZpbGw9IiM5Q0E0QUYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5Mb2FkaW5nLi4uPC90ZXh0Pgo8L3N2Zz4=';
+          img.dataset.thumbPath = item.thumbPath;
+
+          // Intersection Observer for lazy loading
+          const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+              if (entry.isIntersecting) {
+                loadThumbnail(img);
+                observer.unobserve(img);
+              }
+            });
+          }, { rootMargin: '50px' });
+
+          observer.observe(img);
+        }
+
+        itemDiv.innerHTML = `
+          ${img.outerHTML}
+          <div class="clipboard-time">${dims ? dims + ' • ' : ''}${timeAgo(item.timestamp)}</div>
+        `;
+      } else {
+        const safeText = (item.text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const dataAttr = (item.text || '').replace(/"/g, '&quot;');
+        itemDiv.setAttribute('data-type', 'text');
+        itemDiv.setAttribute('data-text', dataAttr);
+        itemDiv.innerHTML = `
+          <div class="clipboard-text">${safeText}</div>
+          <div class="clipboard-time">${timeAgo(item.timestamp)}</div>
+        `;
+      }
+
+      return itemDiv;
+    }
+
+    // Lazy load thumbnail function
+    async function loadThumbnail(img) {
+      const thumbPath = img.dataset.thumbPath;
+      if (!thumbPath) return;
+
+      try {
+        const dataUrl = await ipcRenderer.invoke('load-thumbnail', thumbPath);
+        if (dataUrl) {
+          img.src = dataUrl;
+        }
+      } catch (error) {
+        console.warn('[renderer] Failed to load thumbnail:', error);
+        // Fallback to placeholder
+        img.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIwIiBoZWlnaHQ9IjE0MCIgdmlld0JveD0iMCAwIDMyMCAxNDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIzMjAiIGhlaWdodD0iMTQwIiBmaWxsPSIjRkZFRkVFIi8+Cjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwiIGZvbnQtc2l6ZT0iMTIiIGZpbGw9IiM5Q0E0QUYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5ObyBpbWFnZTwvdGV4dD4KPC9zdmc+';
+      }
+    }
+
+    // Optimized event handling with event delegation for virtual scrolling
     const listEl = document.getElementById('clipboard-list');
     let clickTimer = null;
     const clickDelayMs = 220; // delay to distinguish double-click
@@ -378,8 +546,22 @@
       }
     }
 
-    // Use event delegation for better performance
-    listEl.addEventListener('click', (e) => {
+    // Use event delegation for virtual scrolling - listen on virtual-items container
+    function setupEventDelegation() {
+      const virtualItems = document.querySelector('.virtual-items');
+
+      if (virtualItems) {
+        // Remove existing listeners to avoid duplicates
+        virtualItems.removeEventListener('click', handleItemClick);
+        virtualItems.removeEventListener('dblclick', handleItemDblClick);
+
+        // Add new listeners
+        virtualItems.addEventListener('click', handleItemClick, { passive: true });
+        virtualItems.addEventListener('dblclick', handleItemDblClick, { passive: true });
+      }
+    }
+
+    function handleItemClick(e) {
       const itemEl = e.target.closest('.clipboard-item');
       if (!itemEl) return;
 
@@ -394,9 +576,9 @@
         }
         clickTimer = null;
       }, clickDelayMs);
-    }, { passive: true }); // Use passive listener for better scroll performance
+    }
 
-    listEl.addEventListener('dblclick', (e) => {
+    function handleItemDblClick(e) {
       const itemEl = e.target.closest('.clipboard-item');
       if (!itemEl) return;
       if (clickTimer) {
@@ -404,24 +586,64 @@
         clickTimer = null;
       }
       handlePaste(itemEl);
-    }, { passive: true });
+    }
 
-    // Search with debouncing for smooth performance
+    // Setup event delegation when virtual scrolling is initialized
+    function setupVirtualScroll() {
+      const list = document.getElementById('clipboard-list');
+      const virtualList = list.querySelector('.virtual-list');
+      const spacer = list.querySelector('.virtual-spacer');
+
+      // Set spacer height to represent total content
+      spacer.style.height = virtualScrollState.totalHeight + 'px';
+
+      // Debounced scroll handler for better performance
+      let scrollTimeout = null;
+      const debouncedScroll = () => {
+        if (scrollTimeout) return;
+        scrollTimeout = setTimeout(() => {
+          virtualScrollState.scrollTop = list.scrollTop;
+          updateVisibleItems();
+          scrollTimeout = null;
+        }, 16); // ~60fps
+      };
+
+      // Handle scroll events with debouncing
+      list.addEventListener('scroll', debouncedScroll, { passive: true });
+
+      // Setup event delegation for the virtual scrolling
+      setupEventDelegation();
+
+      // Initial setup
+      virtualScrollState.containerHeight = list.clientHeight;
+      updateVisibleItems();
+    }
+
+    // Search with debouncing for smooth performance - optimized for virtual scrolling
     const searchEl = document.getElementById('search');
     let searchTimeout = null;
+    let filteredItems = []; // Cache filtered results
 
     function applySearch() {
       const q = (searchEl.value || '').toLowerCase().trim();
+
       if (!q) {
+        filteredItems = allItems;
         renderClipboard(allItems);
         return;
       }
-      const filtered = allItems.filter(it => {
-        if (it.type === 'text') return (it.text || '').toLowerCase().includes(q);
+
+      // Optimized filtering with early returns
+      filteredItems = allItems.filter(it => {
+        if (it.type === 'text') {
+          return (it.text || '').toLowerCase().includes(q);
+        }
+        // For images, search in dimensions
         const dims = `${it.width || ''}x${it.height || ''}`;
         return dims.includes(q);
       });
-      renderClipboard(filtered);
+
+      renderClipboard(filteredItems);
     }
 
     function debouncedSearch() {
@@ -429,14 +651,14 @@
       searchTimeout = setTimeout(applySearch, 150); // 150ms debounce
     }
 
-    searchEl.addEventListener('input', debouncedSearch);
+    searchEl.addEventListener('input', debouncedSearch, { passive: true });
     // Also handle immediate search on Enter for better UX
     searchEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         clearTimeout(searchTimeout);
         applySearch();
       }
-    });
+    }, { passive: true });
 
     // Clear history
     async function clearHistory() {
@@ -449,9 +671,10 @@
       document.getElementById('hotkey-display').textContent = hotkey || 'Ctrl+Shift+V';
     }
 
-    // Listen for clipboard updates
+    // Listen for clipboard updates - optimized for virtual scrolling
     ipcRenderer.on('clipboard-updated', (event, items) => {
       allItems = items || [];
+      filteredItems = allItems; // Reset filtered items on update
       applySearch();
     });
 
@@ -460,11 +683,18 @@
       const searchEl = document.getElementById('search');
       if (searchEl.value) {
         searchEl.value = '';
+        filteredItems = allItems; // Reset filtered items
       }
       document.getElementById('settings-modal').style.display = 'none';
       document.body.classList.remove('modal-open');
-      renderClipboard(allItems);
-      
+
+      // Reset virtual scroll state
+      virtualScrollState.scrollTop = 0;
+      virtualScrollState.startIndex = 0;
+      virtualScrollState.endIndex = 0;
+
+      renderClipboard(filteredItems);
+
       // Focus search input for immediate typing
       setTimeout(() => {
         searchEl.focus();

@@ -6,13 +6,23 @@ const robot = require('robotjs'); // added for simulating paste keystroke
 const activeWin = require('active-win'); // diagnostics & focus tracking
 const { spawn } = require('child_process');
 
-// Disable GPU acceleration to prevent GPU errors
-app.disableHardwareAcceleration();
+// Simple text compression using built-in zlib (no native dependencies)
+const zlib = require('zlib');
 
-// Add command line switches for better compatibility
-app.commandLine.appendSwitch('--disable-gpu');
-app.commandLine.appendSwitch('--disable-gpu-sandbox');
-app.commandLine.appendSwitch('--disable-software-rasterizer');
+// Enable GPU acceleration for better UI performance
+// Only disable on known problematic configurations
+const shouldDisableGPU = process.platform === 'linux' && process.arch === 'arm64';
+if (shouldDisableGPU) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch('--disable-gpu');
+  app.commandLine.appendSwitch('--disable-gpu-sandbox');
+  app.commandLine.appendSwitch('--disable-software-rasterizer');
+} else {
+  // Enable GPU acceleration for better performance on macOS/Windows
+  app.commandLine.appendSwitch('--enable-gpu-rasterization');
+  app.commandLine.appendSwitch('--enable-zero-copy');
+  app.commandLine.appendSwitch('--enable-hardware-overlays');
+}
 
 // Initialize persistent storage
 const store = new Store();
@@ -32,10 +42,16 @@ const DEFAULT_SETTINGS = {
 
 // Memory optimization constants
 const MAX_TEXT_SIZE = 50000; // 50KB text limit to prevent memory bloat
+const COMPRESSION_THRESHOLD = 10000; // Compress text larger than 10KB
+const MEMORY_CLEANUP_THRESHOLD = 150; // MB - trigger cleanup when heap exceeds this
+const AGGRESSIVE_CLEANUP_THRESHOLD = 200; // MB - trigger aggressive cleanup
+const MAX_HISTORY_SIZE = 50; // Maximum history size for memory optimization
 
 // Memory monitoring utilities
 let memoryLogInterval = null;
-const MEMORY_LOG_INTERVAL = 60000; // Log memory every 60 seconds
+const MEMORY_LOG_INTERVAL = 30000; // Log memory every 30 seconds for more frequent monitoring
+let lastMemoryCleanup = 0;
+const MEMORY_CLEANUP_COOLDOWN = 300000; // 5 minutes between cleanups
 
 let settings = Object.assign({}, DEFAULT_SETTINGS, store.get('settings', {}));
 
@@ -60,17 +76,14 @@ function logMemoryUsage() {
 
 function startMemoryMonitoring() {
   if (memoryLogInterval) return;
-  console.log('[memory] Starting memory monitoring');
+  console.log('[memory] Starting intelligent memory monitoring');
   logMemoryUsage(); // Initial log
-  memoryLogInterval = setInterval(logMemoryUsage, MEMORY_LOG_INTERVAL);
+  memoryLogInterval = setInterval(monitorMemoryUsage, MEMORY_LOG_INTERVAL);
 }
 
 function stopMemoryMonitoring() {
-  if (memoryLogInterval) {
-    clearInterval(memoryLogInterval);
-    memoryLogInterval = null;
-    console.log('[memory] Stopped memory monitoring');
-  }
+  clearMemoryMonitoring();
+  console.log('[memory] Stopped memory monitoring');
 }
 
 function forceGarbageCollection() {
@@ -80,6 +93,112 @@ function forceGarbageCollection() {
     logMemoryUsage();
   } else {
     console.log('[memory] Garbage collection not available (run with --expose-gc)');
+  }
+}
+
+// Intelligent memory management with automatic cleanup
+function performMemoryCleanup(aggressive = false) {
+  const now = Date.now();
+  if (now - lastMemoryCleanup < MEMORY_CLEANUP_COOLDOWN && !aggressive) {
+    return; // Too soon since last cleanup
+  }
+
+  console.log(`[memory] Performing ${aggressive ? 'aggressive' : 'standard'} memory cleanup`);
+  lastMemoryCleanup = now;
+
+  let cleanedCount = 0;
+  const initialMemory = getMemoryUsage();
+
+  // Force garbage collection first
+  forceGarbageCollection();
+
+  // Clean up old image files that are no longer referenced
+  if (aggressive) {
+    cleanupOrphanedImageFiles();
+  }
+
+  // Trim history if it's getting too large
+  if (clipboardHistory.length > MAX_HISTORY_SIZE) {
+    const toRemove = clipboardHistory.length - MAX_HISTORY_SIZE;
+    const removedItems = clipboardHistory.splice(0, toRemove); // Remove oldest items
+
+    // Clean up files for removed items
+    removedItems.forEach(item => {
+      if (item.type === 'image') {
+        if (item.filePath) deleteFileQuiet(item.filePath);
+        if (item.thumbPath) deleteFileQuiet(item.thumbPath);
+      }
+    });
+
+    cleanedCount += toRemove;
+    console.log(`[memory] Removed ${toRemove} old items from history`);
+  }
+
+  // Clear caches and rebuild them
+  textCache.clear();
+  imageCache.clear();
+  rebuildCaches();
+
+  // Log cleanup results
+  const finalMemory = getMemoryUsage();
+  const memorySaved = initialMemory.heapUsed - finalMemory.heapUsed;
+
+  console.log(`[memory] Cleanup completed: ${cleanedCount} items removed, ${memorySaved > 0 ? memorySaved : 0}MB memory freed`);
+  console.log(`[memory] Memory after cleanup: ${finalMemory.heapUsed}MB heap, ${finalMemory.historySize} items`);
+}
+
+function cleanupOrphanedImageFiles() {
+  try {
+    const imageDir = path.join(app.getPath('userData'), 'images');
+    if (!fs.existsSync(imageDir)) return;
+
+    const files = fs.readdirSync(imageDir);
+    let cleanedFiles = 0;
+
+    files.forEach(file => {
+      const filePath = path.join(imageDir, file);
+      const fileId = path.parse(file).name;
+
+      // Check if this file is referenced in current history
+      const isReferenced = clipboardHistory.some(item =>
+        item.type === 'image' && (
+          item.id === fileId ||
+          (item.filePath && path.basename(item.filePath) === file) ||
+          (item.thumbPath && path.basename(item.thumbPath) === file)
+        )
+      );
+
+      if (!isReferenced) {
+        deleteFileQuiet(filePath);
+        cleanedFiles++;
+      }
+    });
+
+    if (cleanedFiles > 0) {
+      console.log(`[memory] Cleaned up ${cleanedFiles} orphaned image files`);
+    }
+  } catch (error) {
+    console.warn('[memory] Error during orphaned file cleanup:', error.message);
+  }
+}
+
+// Monitor memory usage and trigger cleanup when needed
+function monitorMemoryUsage() {
+  const memory = getMemoryUsage();
+  const cacheStats = clipboardCache.getStats();
+
+  if (memory.heapUsed > AGGRESSIVE_CLEANUP_THRESHOLD) {
+    console.log(`[memory] CRITICAL: Heap usage ${memory.heapUsed}MB exceeds aggressive threshold`);
+    performMemoryCleanup(true);
+  } else if (memory.heapUsed > MEMORY_CLEANUP_THRESHOLD) {
+    console.log(`[memory] WARNING: Heap usage ${memory.heapUsed}MB exceeds cleanup threshold`);
+    performMemoryCleanup(false);
+  }
+
+  // Log memory usage and cache statistics periodically
+  if (memory.heapUsed > 100 || memory.historySize > 20) {
+    console.log(`[memory] Status: ${memory.heapUsed}MB heap, ${memory.historySize} items, ${memory.external}MB external`);
+    console.log(`[LRU] Cache: ${cacheStats.size}/${cacheStats.maxSize} items, ${cacheStats.avgAccesses} avg accesses`);
   }
 }
 
@@ -107,10 +226,157 @@ let pasteSessionCompleted = false; // guard to prevent repeated pastes
 // Track pending paste retry timers so we can cancel if needed
 let pendingPasteTimers = [];
 let clipboardMonitorInterval = null;
+let imageProcessingTimeouts = new Set(); // Track image processing timeouts
+
+// LRU Cache for clipboard history management
+class LRUCache {
+  constructor(maxSize = 50) {
+    this.maxSize = maxSize;
+    this.cache = new Map(); // key -> {item, accessCount, lastAccessed}
+    this.accessOrder = []; // Array to maintain LRU order
+  }
+
+  get(key) {
+    if (!this.cache.has(key)) return null;
+
+    const entry = this.cache.get(key);
+    entry.lastAccessed = Date.now();
+    entry.accessCount++;
+
+    // Move to end (most recently used)
+    this.moveToEnd(key);
+
+    return entry.item;
+  }
+
+  set(key, item) {
+    const now = Date.now();
+
+    if (this.cache.has(key)) {
+      // Update existing item
+      const entry = this.cache.get(key);
+      entry.item = item;
+      entry.lastAccessed = now;
+      entry.accessCount++;
+      this.moveToEnd(key);
+    } else {
+      // Add new item
+      this.cache.set(key, {
+        item,
+        accessCount: 1,
+        lastAccessed: now
+      });
+      this.accessOrder.push(key);
+
+      // Evict if over capacity
+      if (this.cache.size > this.maxSize) {
+        this.evictLRU();
+      }
+    }
+  }
+
+  moveToEnd(key) {
+    const index = this.accessOrder.indexOf(key);
+    if (index > -1) {
+      this.accessOrder.splice(index, 1);
+      this.accessOrder.push(key);
+    }
+  }
+
+  evictLRU() {
+    if (this.accessOrder.length === 0) return;
+
+    const lruKey = this.accessOrder.shift();
+    const entry = this.cache.get(lruKey);
+
+    // Clean up resources if it's an image
+    if (entry && entry.item.type === 'image') {
+      if (entry.item.filePath) deleteFileQuiet(entry.item.filePath);
+      if (entry.item.thumbPath) deleteFileQuiet(entry.item.thumbPath);
+    }
+
+    this.cache.delete(lruKey);
+    console.log(`[LRU] Evicted item: ${lruKey}`);
+  }
+
+  has(key) {
+    return this.cache.has(key);
+  }
+
+  delete(key) {
+    if (this.cache.has(key)) {
+      const index = this.accessOrder.indexOf(key);
+      if (index > -1) {
+        this.accessOrder.splice(index, 1);
+      }
+      this.cache.delete(key);
+      return true;
+    }
+    return false;
+  }
+
+  clear() {
+    // Clean up all image resources
+    for (const [key, entry] of this.cache.entries()) {
+      if (entry.item.type === 'image') {
+        if (entry.item.filePath) deleteFileQuiet(entry.item.filePath);
+        if (entry.item.thumbPath) deleteFileQuiet(entry.item.thumbPath);
+      }
+    }
+
+    this.cache.clear();
+    this.accessOrder = [];
+  }
+
+  size() {
+    return this.cache.size;
+  }
+
+  // Get items in LRU order (most recently used first)
+  getItemsInOrder() {
+    return this.accessOrder.map(key => this.cache.get(key).item).reverse();
+  }
+
+  // Get cache statistics
+  getStats() {
+    const totalAccesses = Array.from(this.cache.values()).reduce((sum, entry) => sum + entry.accessCount, 0);
+    const avgAccesses = totalAccesses / this.cache.size || 0;
+
+    return {
+      size: this.cache.size,
+      maxSize: this.maxSize,
+      totalAccesses,
+      avgAccesses: avgAccesses.toFixed(2),
+      hitRate: this.cache.size > 0 ? (totalAccesses / (totalAccesses + (this.maxSize - this.cache.size))) * 100 : 0
+    };
+  }
+}
+
+// Global LRU cache instance
+const clipboardCache = new LRUCache(30); // Cache up to 30 items
 
 function clearPendingPasteTimers() {
   pendingPasteTimers.forEach(t => clearTimeout(t));
   pendingPasteTimers = [];
+}
+
+function clearImageProcessingTimeouts() {
+  imageProcessingTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
+  imageProcessingTimeouts.clear();
+}
+
+function clearMemoryMonitoring() {
+  if (memoryLogInterval) {
+    clearInterval(memoryLogInterval);
+    memoryLogInterval = null;
+  }
+}
+
+function clearClipboardMonitoring() {
+  if (clipboardMonitorInterval) {
+    clearInterval(clipboardMonitorInterval);
+    clipboardMonitorInterval = null;
+  }
 }
 
 function simulatePasteKeystroke(attempt, totalAttempts) {
@@ -493,24 +759,47 @@ const createWindow = () => {
   mainWindow.on('closed', () => {
     console.log('[cleanup] Main window closed, clearing timers...');
     clearPendingPasteTimers();
+    clearImageProcessingTimeouts();
     mainWindow = null;
   });
-  
+
   backdropWindow.on('closed', () => {
     console.log('[cleanup] Backdrop window closed');
     backdropWindow = null;
   });
 };
 
-// Monitor clipboard changes
+// Monitor clipboard changes - OPTIMIZED VERSION
 let lastClipboardSignature = '';
+let lastClipboardCheck = 0;
+let consecutiveEmptyChecks = 0;
+const MIN_CHECK_INTERVAL = 2000; // Minimum 2 seconds between checks
+const MAX_CHECK_INTERVAL = 10000; // Maximum 10 seconds when idle
+let currentCheckInterval = MIN_CHECK_INTERVAL;
+
 const monitorClipboard = () => {
   // Clear existing interval if any
   if (clipboardMonitorInterval) {
     clearInterval(clipboardMonitorInterval);
   }
-  
+
   clipboardMonitorInterval = setInterval(() => {
+    const now = Date.now();
+
+    // Adaptive polling: slow down when no changes detected
+    if (consecutiveEmptyChecks > 5) {
+      if (now - lastClipboardCheck < currentCheckInterval) {
+        return; // Skip this check
+      }
+      // Gradually increase interval up to max
+      currentCheckInterval = Math.min(currentCheckInterval + 500, MAX_CHECK_INTERVAL);
+    } else {
+      // Reset to minimum interval when active
+      currentCheckInterval = MIN_CHECK_INTERVAL;
+    }
+
+    lastClipboardCheck = now;
+
     try {
       // Prefer image if available; otherwise fall back to non-empty text
       const img = clipboard.readImage();
@@ -521,24 +810,14 @@ const monitorClipboard = () => {
         const signature = `image:${size.width}x${size.height}`; // avoid heavy encoding in the polling loop
         if (signature !== lastClipboardSignature) {
           lastClipboardSignature = signature;
-          // Persist full-resolution image once per new image
-          ensureImageStoreDir();
-          const pngBuffer = img.toPNG();
-          const { id, filePath } = saveImagePng(pngBuffer);
-          // Build a lightweight thumbnail for UI and save as file
-          const maxThumbWidth = getThumbWidth();
-          const thumb = img.resize({ width: Math.min(maxThumbWidth, size.width) });
-          const thumbBuffer = thumb.toPNG();
-          const thumbPath = saveThumbnailPng(thumbBuffer);
-          addToHistory({
-            type: 'image',
-            id,
-            filePath,
-            width: size.width,
-            height: size.height,
-            thumbPath,
-            signature
-          });
+          consecutiveEmptyChecks = 0; // Reset idle counter
+
+          // Defer heavy image processing to avoid blocking main thread
+          setTimeout(() => {
+            processImageClipboard(img, size, signature);
+          }, 10);
+        } else {
+          consecutiveEmptyChecks++;
         }
         return; // do not process text if image present
       }
@@ -550,24 +829,89 @@ const monitorClipboard = () => {
         const signature = `text:${currentText}`;
         if (signature !== lastClipboardSignature) {
           lastClipboardSignature = signature;
+          consecutiveEmptyChecks = 0; // Reset idle counter
           addToHistory({ type: 'text', text: currentText });
+        } else {
+          consecutiveEmptyChecks++;
         }
+      } else {
+        consecutiveEmptyChecks++;
       }
     } catch (e) {
       console.warn('[clipboard] Monitor error:', e?.message || e);
+      consecutiveEmptyChecks++;
     }
-  }, 500); // Check every 500ms
+  }, 2000); // Check every 2 seconds (much more reasonable)
 };
+
+// Separate function for heavy image processing to avoid blocking main thread
+function processImageClipboard(img, size, signature) {
+  // Use process.nextTick and setImmediate for better async processing
+  const processImage = () => {
+    try {
+                // Persist full-resolution image once per new image
+          ensureImageStoreDir();
+          const pngBuffer = img.toPNG();
+          const { id, filePath } = saveImagePng(pngBuffer);
+
+          // Build a lightweight thumbnail for UI using WebP for better compression
+          const maxThumbWidth = getThumbWidth();
+          const thumb = img.resize({ width: Math.min(maxThumbWidth, size.width) });
+          const thumbBuffer = thumb.toPNG();
+          const thumbPath = saveThumbnailWebP(thumbBuffer, 80); // 80% quality for good balance
+
+      // Use setImmediate to defer history addition to next tick
+      setImmediate(() => {
+        addToHistory({
+          type: 'image',
+          id,
+          filePath,
+          width: size.width,
+          height: size.height,
+          thumbPath,
+          signature
+        });
+      });
+    } catch (e) {
+      console.warn('[clipboard] Image processing error:', e?.message || e);
+    }
+  };
+
+  // Track this timeout for cleanup
+  const timeoutId = setTimeout(() => {
+    process.nextTick(processImage);
+    imageProcessingTimeouts.delete(timeoutId);
+  }, 1); // Minimal delay to ensure async execution
+
+  imageProcessingTimeouts.add(timeoutId);
+}
 
 // Add item to clipboard history (supports text and image)
 const addToHistory = (item) => {
   if (!item) return;
+
+  // Create unique key for LRU cache
+  const cacheKey = item.type === 'text' ? `text_${item.text.substring(0, 100)}` : `image_${item.signature}`;
+
+  // Check if item already exists in LRU cache
+  const existingItem = clipboardCache.get(cacheKey);
+  if (existingItem) {
+    console.log(`[LRU] Item already in cache, updating access: ${cacheKey}`);
+    return; // Item already exists and was accessed, no need to add again
+  }
+
   if (item.type === 'text') {
-    console.log('Adding to history (text):', item.text.substring(0, 50) + '...');
+    // Process text with compression and truncation
+    const processedText = processText(item.text);
+    console.log('Adding to history (text):', (typeof processedText === 'string' ? processedText : processedText.data).substring(0, 50) + '...');
+
     // Optimized duplicate removal using cache
     removeDuplicateText(item.text);
-    const newItem = { type: 'text', text: item.text, timestamp: Date.now() };
+    const newItem = { type: 'text', text: processedText, timestamp: Date.now() };
     clipboardHistory.unshift(newItem);
+
+    // Add to LRU cache and text cache
+    clipboardCache.set(cacheKey, newItem);
     textCache.add(item.text);
   } else if (item.type === 'image') {
     const sizeLabel = `${item.width}x${item.height}`;
@@ -585,6 +929,9 @@ const addToHistory = (item) => {
       timestamp: Date.now()
     };
     clipboardHistory.unshift(newItem);
+
+    // Add to LRU cache and image cache
+    clipboardCache.set(cacheKey, newItem);
     if (item.signature) imageCache.add(item.signature);
   } else {
     return;
@@ -678,6 +1025,30 @@ function saveImagePng(pngBuffer) {
   return { id, filePath };
 }
 
+function saveThumbnailWebP(thumbnailBuffer, quality = 80) {
+  ensureImageStoreDir();
+  const id = `thumb-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const thumbPath = path.join(imageStoreDir, `${id}.webp`);
+
+  try {
+    // Convert PNG buffer to nativeImage, then to WebP
+    const image = nativeImage.createFromBuffer(thumbnailBuffer);
+    const webpBuffer = image.toDataURL('image/webp', quality);
+
+    // Extract base64 data and convert to buffer
+    const base64Data = webpBuffer.split(',')[1];
+    const webpImageBuffer = Buffer.from(base64Data, 'base64');
+
+    fs.writeFileSync(thumbPath, webpImageBuffer);
+    console.log(`[thumbnail] Saved WebP thumbnail: ${webpBuffer.length} -> ${webpImageBuffer.length} bytes`);
+    return thumbPath;
+  } catch (e) {
+    console.warn('[thumbnail] WebP failed, falling back to PNG:', e?.message || e);
+    // Fallback to PNG if WebP fails
+    return saveThumbnailPng(thumbnailBuffer);
+  }
+}
+
 function saveThumbnailPng(thumbnailBuffer) {
   ensureImageStoreDir();
   const id = `thumb-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -695,13 +1066,69 @@ function deleteFileQuiet(filePath) {
   try { fs.unlinkSync(filePath); } catch (_) {}
 }
 
+// Text compression functions using zlib (built-in, no native dependencies)
+function compressText(text) {
+  if (!text || typeof text !== 'string' || text.length < COMPRESSION_THRESHOLD) {
+    return text;
+  }
+
+  try {
+    const input = Buffer.from(text, 'utf8');
+    const compressed = zlib.deflateSync(input);
+    const originalSize = input.length;
+    const compressedSize = compressed.length;
+    const ratio = ((originalSize - compressedSize) / originalSize * 100).toFixed(1);
+
+    console.log(`[compression] Text compressed: ${originalSize} -> ${compressedSize} bytes (${ratio}% reduction)`);
+    return {
+      compressed: true,
+      data: compressed.toString('base64'),
+      originalSize,
+      compressedSize
+    };
+  } catch (error) {
+    console.warn('[compression] Failed to compress text:', error.message);
+    return text;
+  }
+}
+
+function decompressText(compressedData) {
+  if (!compressedData || typeof compressedData === 'string') {
+    return compressedData;
+  }
+
+  if (compressedData.compressed && compressedData.data) {
+    try {
+      const compressed = Buffer.from(compressedData.data, 'base64');
+      const decompressed = zlib.inflateSync(compressed);
+      return decompressed.toString('utf8');
+    } catch (error) {
+      console.warn('[compression] Failed to decompress text:', error.message);
+      return compressedData.data || '';
+    }
+  }
+
+  return compressedData;
+}
+
 function truncateText(text) {
   if (!text || typeof text !== 'string') return text;
   if (text.length <= MAX_TEXT_SIZE) return text;
-  
+
   const truncated = text.substring(0, MAX_TEXT_SIZE);
   console.log(`[memory] Text truncated from ${text.length} to ${truncated.length} characters`);
   return truncated + '\n\n[... text truncated for memory optimization]';
+}
+
+// Enhanced text processing with compression
+function processText(text) {
+  if (!text || typeof text !== 'string') return text;
+
+  // First truncate if too large
+  text = truncateText(text);
+
+  // Then compress if still large enough
+  return compressText(text);
 }
 
 // Cache management functions for optimized duplicate detection
@@ -764,21 +1191,45 @@ function removeDuplicateImage(item) {
 
 function sendHistoryToRenderer() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  const lightweight = clipboardHistory.map(i => {
+
+  // Use LRU cache order if available, otherwise use regular history
+  const itemsToSend = clipboardCache.size() > 0 ? clipboardCache.getItemsInOrder() : clipboardHistory;
+
+  const lightweight = itemsToSend.map(i => {
     if (i.type === 'image') {
-      // Convert thumbnail file path to data URL for renderer
+      // Use lazy loading for thumbnails - send file path instead of base64
+      // Renderer will load thumbnails on demand
       let thumbDataUrl = null;
       if (i.thumbPath && fs.existsSync(i.thumbPath)) {
         try {
-          const thumbBuffer = fs.readFileSync(i.thumbPath);
-          thumbDataUrl = `data:image/png;base64,${thumbBuffer.toString('base64')}`;
+          // Only load thumbnail if it's WebP or small PNG, otherwise lazy load
+          const stats = fs.statSync(i.thumbPath);
+          if (stats.size < 50000 || i.thumbPath.endsWith('.webp')) { // Load small files or WebP immediately
+            const thumbBuffer = fs.readFileSync(i.thumbPath);
+            const format = i.thumbPath.endsWith('.webp') ? 'webp' : 'png';
+            thumbDataUrl = `data:image/${format};base64,${thumbBuffer.toString('base64')}`;
+          } else {
+            // For large PNG files, send file path for lazy loading
+            thumbDataUrl = `file://${i.thumbPath}`;
+          }
         } catch (e) {
           console.warn('[thumbnail] Failed to read thumbnail file:', e?.message || e);
         }
       }
-      return { type: 'image', id: i.id, width: i.width, height: i.height, thumbDataUrl, timestamp: i.timestamp };
+      return {
+        type: 'image',
+        id: i.id,
+        width: i.width,
+        height: i.height,
+        thumbDataUrl,
+        thumbPath: i.thumbPath, // Include path for lazy loading
+        timestamp: i.timestamp
+      };
     }
-    return { type: 'text', text: i.text, timestamp: i.timestamp };
+
+    // Decompress text before sending to renderer
+    const decompressedText = decompressText(i.text);
+    return { type: 'text', text: decompressedText, timestamp: i.timestamp };
   });
   mainWindow.webContents.send('clipboard-updated', lightweight);
 }
@@ -868,12 +1319,17 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
-  console.log('[cleanup] Destroying tray icon...');
+  console.log('[cleanup] App before-quit, starting cleanup...');
   // Clean up tray when quitting
   if (tray) {
     tray.destroy();
     tray = null;
   }
+  // Clear all timers and intervals
+  clearPendingPasteTimers();
+  clearImageProcessingTimeouts();
+  clearMemoryMonitoring();
+  clearClipboardMonitoring();
 });
 
 app.on('activate', () => {
@@ -886,22 +1342,21 @@ app.on('activate', () => {
 
 app.on('will-quit', () => {
   // Comprehensive cleanup on app quit
-  console.log('[cleanup] Starting app cleanup...');
-  
-  // Clear all timers
+  console.log('[cleanup] Starting comprehensive app cleanup...');
+
+  // Clear all timers and intervals
   clearPendingPasteTimers();
-  if (clipboardMonitorInterval) {
-    clearInterval(clipboardMonitorInterval);
-    clipboardMonitorInterval = null;
-  }
-  
+  clearImageProcessingTimeouts();
+  clearMemoryMonitoring();
+  clearClipboardMonitoring();
+
   // Stop memory monitoring
   stopMemoryMonitoring();
-  
+
   // Unregister all shortcuts
   globalShortcut.unregisterAll();
-  
-  console.log('[cleanup] App cleanup completed');
+
+  console.log('[cleanup] Comprehensive app cleanup completed');
 });
 
 // IPC handlers
@@ -995,7 +1450,7 @@ ipcMain.handle('copy-item', (event, payload) => {
 
 ipcMain.handle('clear-history', () => {
   const beforeMemory = getMemoryUsage();
-  
+
   // Clean up all image and thumbnail files before clearing history
   clipboardHistory.forEach(i => {
     if (i.type === 'image') {
@@ -1003,17 +1458,19 @@ ipcMain.handle('clear-history', () => {
       if (i.thumbPath) deleteFileQuiet(i.thumbPath);
     }
   });
-  
+
   clipboardHistory = [];
-  // Clear caches for optimized performance
+  // Clear all caches for optimized performance
   textCache.clear();
   imageCache.clear();
+  clipboardCache.clear();
   store.delete('clipboardHistory');
-  
+
   // Log memory cleanup
   const afterMemory = getMemoryUsage();
-  console.log(`[memory] Cleared history: ${beforeMemory.heapUsed}MB -> ${afterMemory.heapUsed}MB (freed ${beforeMemory.heapUsed - afterMemory.heapUsed}MB)`);
-  
+  const memoryFreed = beforeMemory.heapUsed - afterMemory.heapUsed;
+  console.log(`[memory] Cleared history: ${beforeMemory.heapUsed}MB -> ${afterMemory.heapUsed}MB (freed ${memoryFreed > 0 ? memoryFreed : 0}MB)`);
+
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('clipboard-updated', clipboardHistory);
   }
@@ -1126,6 +1583,22 @@ ipcMain.handle('update-settings', (event, partial) => {
 
 ipcMain.handle('get-hotkey', () => {
   return getEffectiveHotkey();
+});
+
+// Lazy load thumbnail handler
+ipcMain.handle('load-thumbnail', async (event, thumbPath) => {
+  try {
+    if (!thumbPath || !fs.existsSync(thumbPath)) {
+      return null;
+    }
+
+    const thumbBuffer = fs.readFileSync(thumbPath);
+    const format = thumbPath.endsWith('.webp') ? 'webp' : 'png';
+    return `data:image/${format};base64,${thumbBuffer.toString('base64')}`;
+  } catch (error) {
+    console.warn('[thumbnail] Failed to lazy load thumbnail:', error.message);
+    return null;
+  }
 });
 
 // Memory monitoring IPC handlers
