@@ -25,13 +25,12 @@
   "license": "MIT",
   "devDependencies": {
     "electron": "^27.0.0",
-    "electron-builder": "^24.6.4",
-    "electron-rebuild": "^3.2.9"
+    "electron-builder": "^24.6.4"
   },
   "dependencies": {
+    "@evgenonyskiv/robotjs": "^0.6.48",
     "active-win": "^8.2.1",
-    "electron-store": "^8.1.0",
-    "robotjs": "^0.6.0"
+    "electron-store": "^8.1.0"
   },
   "build": {
     "appId": "com.jnopareboateng.minimal-clipboard",
@@ -74,5 +73,9 @@
       "createStartMenuShortcut": false,
       "include": "build/installer.nsh"
     }
+  },
+  "overrides": {
+    "node-abi": "^3.50.0",
+    "prebuild-install": "^7.0.0"
   }
 }

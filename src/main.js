@@ -2,7 +2,7 @@ const { app, BrowserWindow, globalShortcut, clipboard, ipcMain, screen, nativeIm
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
-const robot = require('robotjs'); // added for simulating paste keystroke
+const robot = require('@evgenonyskiv/robotjs'); // added for simulating paste keystroke
 const activeWin = require('active-win'); // diagnostics & focus tracking
 const { spawn } = require('child_process');
 
