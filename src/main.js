@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, clipboard, ipcMain, screen, nativeImage, Tray, Menu } = require('electron');
+const { app, BrowserWindow, globalShortcut, clipboard, ipcMain, screen, nativeImage, Tray, Menu, systemPreferences } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
@@ -37,7 +37,8 @@ const DEFAULT_SETTINGS = {
   thumbWidth: 320,
   singleClickAction: 'copy', // 'copy' | 'paste' | 'none'
   rememberPosition: true,
-  hotkey: null // null means use platform default
+  hotkey: null, // null means use platform default
+  autoStart: true // Auto-start on system login
 };
 
 // Memory optimization constants
@@ -199,6 +200,126 @@ function monitorMemoryUsage() {
   if (memory.heapUsed > 100 || memory.historySize > 20) {
     console.log(`[memory] Status: ${memory.heapUsed}MB heap, ${memory.historySize} items, ${memory.external}MB external`);
     console.log(`[LRU] Cache: ${cacheStats.size}/${cacheStats.maxSize} items, ${cacheStats.avgAccesses} avg accesses`);
+  }
+}
+
+// macOS Permissions Management
+let permissionsChecked = false;
+let hasAccessibilityPermission = false;
+let hasScreenRecordingPermission = false;
+
+/**
+ * Check macOS permissions status without triggering prompts
+ */
+function checkMacOSPermissions() {
+  if (process.platform !== 'darwin') {
+    return { accessibility: true, screenRecording: true };
+  }
+
+  // Check accessibility permission
+  const accessibilityStatus = systemPreferences.isTrustedAccessibilityClient(false);
+
+  // Check screen recording permission (available in Electron 9+)
+  let screenRecordingStatus = true;
+  if (systemPreferences.getMediaAccessStatus) {
+    try {
+      screenRecordingStatus = systemPreferences.getMediaAccessStatus('screen') === 'granted';
+    } catch (error) {
+      console.warn('[permissions] Could not check screen recording status:', error.message);
+    }
+  }
+
+  hasAccessibilityPermission = accessibilityStatus;
+  hasScreenRecordingPermission = screenRecordingStatus;
+
+  console.log('[permissions] Status check:', {
+    accessibility: hasAccessibilityPermission,
+    screenRecording: hasScreenRecordingPermission
+  });
+
+  return {
+    accessibility: hasAccessibilityPermission,
+    screenRecording: hasScreenRecordingPermission
+  };
+}
+
+/**
+ * Request macOS permissions with user-friendly dialogs
+ * Only prompts if permissions are not yet granted
+ */
+async function requestMacOSPermissions() {
+  if (process.platform !== 'darwin') {
+    return true;
+  }
+
+  // Skip if already checked this session
+  if (permissionsChecked) {
+    console.log('[permissions] Already checked this session, skipping');
+    return hasAccessibilityPermission && hasScreenRecordingPermission;
+  }
+
+  const status = checkMacOSPermissions();
+  permissionsChecked = true;
+
+  // If both permissions are already granted, no need to prompt
+  if (status.accessibility && status.screenRecording) {
+    console.log('[permissions] All permissions already granted');
+    return true;
+  }
+
+  console.log('[permissions] Requesting missing permissions...');
+
+  // Request accessibility permission if needed
+  if (!status.accessibility) {
+    const { dialog } = require('electron');
+    await dialog.showMessageBox({
+      type: 'info',
+      title: 'Accessibility Permission Required',
+      message: 'Minimal Clipboard needs Accessibility permission',
+      detail: 'This permission is required to:\n• Simulate keyboard shortcuts for pasting\n• Monitor clipboard changes\n\nPlease grant access in System Settings → Privacy & Security → Accessibility',
+      buttons: ['Open System Settings', 'Later']
+    }).then((result) => {
+      if (result.response === 0) {
+        // Open System Settings
+        const { shell } = require('electron');
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
+      }
+    });
+
+    // Trigger the actual permission request
+    systemPreferences.isTrustedAccessibilityClient(true);
+  }
+
+  // Request screen recording permission if needed (for active-win package)
+  if (!status.screenRecording && systemPreferences.askForMediaAccess) {
+    try {
+      await systemPreferences.askForMediaAccess('screen');
+      console.log('[permissions] Screen recording permission requested');
+    } catch (error) {
+      console.warn('[permissions] Could not request screen recording:', error.message);
+    }
+  }
+
+  // Re-check after requests
+  const finalStatus = checkMacOSPermissions();
+  return finalStatus.accessibility && finalStatus.screenRecording;
+}
+
+/**
+ * Wrapper for robot.js calls that checks permissions first
+ */
+function safeKeyTap(...args) {
+  if (process.platform === 'darwin' && !hasAccessibilityPermission) {
+    console.warn('[permissions] Cannot simulate keystroke - accessibility permission not granted');
+    return false;
+  }
+
+  try {
+    robot.keyTap(...args);
+    return true;
+  } catch (error) {
+    console.error('[permissions] Failed to simulate keystroke:', error.message);
+    return false;
   }
 }
 
@@ -383,8 +504,12 @@ function simulatePasteKeystroke(attempt, totalAttempts) {
   try {
     const platform = process.platform;
     const modifier = platform === 'darwin' ? 'command' : 'control';
-    robot.keyTap('v', modifier);
-    console.log(`[paste] Sent keystroke attempt ${attempt + 1}/${totalAttempts}`);
+    const success = safeKeyTap('v', modifier);
+    if (success) {
+      console.log(`[paste] Sent keystroke attempt ${attempt + 1}/${totalAttempts}`);
+    } else {
+      console.warn(`[paste] Keystroke attempt ${attempt + 1}/${totalAttempts} skipped - no permissions`);
+    }
   } catch (e) {
     console.error('[paste] Failed to simulate keystroke attempt', attempt + 1, e?.message || e);
   }
@@ -440,7 +565,7 @@ function schedulePasteRetries() {
     const diagTimer = setTimeout(() => {
       activeWin().then(info => {
         console.log(`[focus] t+${t}ms active window:`, info ? `${info.owner.name} | ${info.title}` : 'unknown');
-      }).catch(()=>{});
+      }).catch(() => { });
     }, t);
     pendingPasteTimers.push(diagTimer);
   });
@@ -461,26 +586,84 @@ function getEffectiveHotkey() {
 // Helpers to manage overlay visibility
 function hideOverlayWindows() {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    try { mainWindow.hide(); } catch (_) {}
+    try { mainWindow.hide(); } catch (_) { }
   }
   if (backdropWindow && !backdropWindow.isDestroyed()) {
-    try { backdropWindow.hide(); } catch (_) {}
+    try { backdropWindow.hide(); } catch (_) { }
+  }
+}
+
+/**
+ * Get the display where the cursor is currently located
+ */
+function getActiveDisplay() {
+  try {
+    const cursorPoint = screen.getCursorScreenPoint();
+    const activeDisplay = screen.getDisplayNearestPoint(cursorPoint);
+    console.log('[display] Cursor at:', cursorPoint, 'Display:', activeDisplay.id);
+    return activeDisplay;
+  } catch (error) {
+    console.warn('[display] Failed to get active display, using primary:', error.message);
+    return screen.getPrimaryDisplay();
+  }
+}
+
+/**
+ * Reposition the window on the active screen (where cursor is)
+ */
+function repositionWindowOnActiveScreen() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  try {
+    const activeDisplay = getActiveDisplay();
+    const { bounds } = activeDisplay;
+    const windowBounds = mainWindow.getBounds();
+
+    // Calculate position: right side of the active screen with some margin
+    const margin = 20;
+    const newX = bounds.x + bounds.width - windowBounds.width - margin;
+    const newY = bounds.y + 100; // 100px from top of screen
+
+    console.log('[display] Repositioning window to:', { x: newX, y: newY, display: activeDisplay.id });
+
+    // Set the new position
+    mainWindow.setBounds({
+      x: newX,
+      y: newY,
+      width: windowBounds.width,
+      height: windowBounds.height
+    });
+
+    // Also update backdrop to cover the active display
+    if (backdropWindow && !backdropWindow.isDestroyed()) {
+      backdropWindow.setBounds({
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height
+      });
+    }
+  } catch (error) {
+    console.error('[display] Failed to reposition window:', error.message);
   }
 }
 
 function showOverlayWindows() {
+  // Reposition window on the active screen before showing
+  repositionWindowOnActiveScreen();
+
   if (backdropWindow && !backdropWindow.isDestroyed()) {
     backdropWindow.show();
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
     // Show and focus the window properly
     mainWindow.show();
-    try { mainWindow.moveTop(); } catch (_) {}
-    try { mainWindow.focus(); } catch (_) {}
-    
+    try { mainWindow.moveTop(); } catch (_) { }
+    try { mainWindow.focus(); } catch (_) { }
+
     // Send reset-ui event after a short delay to ensure window is focused
     setTimeout(() => {
-      try { mainWindow.webContents.send('reset-ui'); } catch (_) {}
+      try { mainWindow.webContents.send('reset-ui'); } catch (_) { }
     }, 50);
   }
 }
@@ -514,15 +697,15 @@ function create_tray() {
 
         // Clipboard body (white rectangle)
         if (x >= margin && x < margin + clipWidth &&
-            y >= margin + 3 && y < margin + clipHeight - 3) {
+          y >= margin + 3 && y < margin + clipHeight - 3) {
           iconData[idx] = 255;     // R
           iconData[idx + 1] = 255; // G
           iconData[idx + 2] = 255; // B
         }
 
         // Clipboard clip (blue rectangle at top)
-        if (x >= margin + clipWidth/2 - 2 && x < margin + clipWidth/2 + 2 &&
-            y >= margin && y < margin + 6) {
+        if (x >= margin + clipWidth / 2 - 2 && x < margin + clipWidth / 2 + 2 &&
+          y >= margin && y < margin + 6) {
           iconData[idx] = 0;     // R
           iconData[idx + 1] = 122; // G
           iconData[idx + 2] = 204; // B
@@ -673,7 +856,7 @@ const createWindow = () => {
     }
   });
 
-  try { backdropWindow.setAlwaysOnTop(true, 'floating'); } catch (_) {}
+  try { backdropWindow.setAlwaysOnTop(true, 'floating'); } catch (_) { }
   backdropWindow.loadFile(path.join(__dirname, 'backdrop.html'));
 
   // Create the visible overlay window
@@ -703,7 +886,7 @@ const createWindow = () => {
     // We'll show it without focusing (showInactive) to keep the previous app active on open.
     focusable: true,
     movable: true,
-  acceptFirstMouse: true,
+    acceptFirstMouse: true,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
@@ -711,7 +894,7 @@ const createWindow = () => {
       enableRemoteModule: false
     }
   });
-  try { mainWindow.setAlwaysOnTop(true, 'screen-saver'); } catch (_) {}
+  try { mainWindow.setAlwaysOnTop(true, 'screen-saver'); } catch (_) { }
 
   // Configure windows to be minimized/hidden across all platforms
   if (process.platform === 'win32') {
@@ -722,13 +905,13 @@ const createWindow = () => {
     try {
       mainWindow.setSkipTaskbar(true);
       backdropWindow.setSkipTaskbar(true);
-    } catch (_) {}
+    } catch (_) { }
   } else if (process.platform === 'linux') {
     // Linux: Ensure windows don't show in taskbar/panel
     try {
       mainWindow.setSkipTaskbar(true);
       backdropWindow.setSkipTaskbar(true);
-    } catch (_) {}
+    } catch (_) { }
   }
 
   mainWindow.loadFile(path.join(__dirname, 'renderer.html'));
@@ -754,7 +937,7 @@ const createWindow = () => {
     }
   };
   mainWindow.on('move', persistBounds);
-  
+
   // Cleanup on window destruction
   mainWindow.on('closed', () => {
     console.log('[cleanup] Main window closed, clearing timers...');
@@ -849,16 +1032,16 @@ function processImageClipboard(img, size, signature) {
   // Use process.nextTick and setImmediate for better async processing
   const processImage = () => {
     try {
-                // Persist full-resolution image once per new image
-          ensureImageStoreDir();
-          const pngBuffer = img.toPNG();
-          const { id, filePath } = saveImagePng(pngBuffer);
+      // Persist full-resolution image once per new image
+      ensureImageStoreDir();
+      const pngBuffer = img.toPNG();
+      const { id, filePath } = saveImagePng(pngBuffer);
 
-          // Build a lightweight thumbnail for UI using WebP for better compression
-          const maxThumbWidth = getThumbWidth();
-          const thumb = img.resize({ width: Math.min(maxThumbWidth, size.width) });
-          const thumbBuffer = thumb.toPNG();
-          const thumbPath = saveThumbnailWebP(thumbBuffer, 80); // 80% quality for good balance
+      // Build a lightweight thumbnail for UI using WebP for better compression
+      const maxThumbWidth = getThumbWidth();
+      const thumb = img.resize({ width: Math.min(maxThumbWidth, size.width) });
+      const thumbBuffer = thumb.toPNG();
+      const thumbPath = saveThumbnailWebP(thumbBuffer, 80); // 80% quality for good balance
 
       // Use setImmediate to defer history addition to next tick
       setImmediate(() => {
@@ -941,7 +1124,7 @@ const addToHistory = (item) => {
   if (clipboardHistory.length > getMaxHistory()) {
     const toRemove = clipboardHistory.slice(getMaxHistory());
     // Clean up image files and cache entries for removed items
-    toRemove.forEach(i => { 
+    toRemove.forEach(i => {
       if (i.type === 'image') {
         if (i.filePath) deleteFileQuiet(i.filePath);
         if (i.thumbPath) deleteFileQuiet(i.thumbPath);
@@ -972,7 +1155,7 @@ const addToHistory = (item) => {
 const loadHistory = () => {
   const saved = store.get('clipboardHistory', []);
   clipboardHistory = Array.isArray(saved) ? saved : [];
-  
+
   // Migration: Remove old entries with thumbDataUrl to free memory
   // New clipboard monitoring will regenerate thumbnails as files
   let migrationNeeded = false;
@@ -986,7 +1169,7 @@ const loadHistory = () => {
     }
     return true; // Keep this entry
   });
-  
+
   // Migration: Apply text size limits to existing text entries
   clipboardHistory.forEach(item => {
     if (item.type === 'text' && item.text && item.text.length > MAX_TEXT_SIZE) {
@@ -995,12 +1178,12 @@ const loadHistory = () => {
       migrationNeeded = true;
     }
   });
-  
+
   if (migrationNeeded) {
     console.log('[migration] Cleaned up old base64 thumbnails, saving updated history');
     store.set('clipboardHistory', clipboardHistory);
   }
-  
+
   // Rebuild caches for optimized duplicate detection
   rebuildCaches();
   console.log(`[cache] Rebuilt caches: ${textCache.size} texts, ${imageCache.size} images`);
@@ -1010,7 +1193,7 @@ function ensureImageStoreDir() {
   if (!imageStoreDir) {
     imageStoreDir = path.join(app.getPath('userData'), 'images');
   }
-  try { fs.mkdirSync(imageStoreDir, { recursive: true }); } catch (_) {}
+  try { fs.mkdirSync(imageStoreDir, { recursive: true }); } catch (_) { }
 }
 
 function saveImagePng(pngBuffer) {
@@ -1063,7 +1246,7 @@ function saveThumbnailPng(thumbnailBuffer) {
 }
 
 function deleteFileQuiet(filePath) {
-  try { fs.unlinkSync(filePath); } catch (_) {}
+  try { fs.unlinkSync(filePath); } catch (_) { }
 }
 
 // Text compression functions using zlib (built-in, no native dependencies)
@@ -1146,7 +1329,7 @@ function rebuildCaches() {
 
 function removeDuplicateText(text) {
   if (!textCache.has(text)) return false;
-  
+
   // Remove from array and cache
   const index = clipboardHistory.findIndex(h => h.type === 'text' && h.text === text);
   if (index !== -1) {
@@ -1159,7 +1342,7 @@ function removeDuplicateText(text) {
 
 function removeDuplicateImage(item) {
   let removed = false;
-  
+
   if (item.signature && imageCache.has(item.signature)) {
     // Remove by signature
     const index = clipboardHistory.findIndex(h => h.type === 'image' && h.signature === item.signature);
@@ -1173,7 +1356,7 @@ function removeDuplicateImage(item) {
     }
   } else {
     // Fallback: remove by dimensions
-    const index = clipboardHistory.findIndex(h => 
+    const index = clipboardHistory.findIndex(h =>
       h.type === 'image' && h.width === item.width && h.height === item.height
     );
     if (index !== -1) {
@@ -1185,7 +1368,7 @@ function removeDuplicateImage(item) {
       removed = true;
     }
   }
-  
+
   return removed;
 }
 
@@ -1264,19 +1447,54 @@ function configureAppForMinimizedStartup() {
 // Global tray reference to prevent garbage collection
 let tray = null;
 
+/**
+ * Configure auto-start on system login
+ */
+function configureAutoStart() {
+  if (process.platform !== 'darwin' && process.platform !== 'win32') {
+    console.log('[autostart] Auto-start only supported on macOS and Windows');
+    return;
+  }
+
+  const autoStart = settings.autoStart !== false; // Default to true
+
+  console.log(`[autostart] Configuring auto-start: ${autoStart}`);
+
+  app.setLoginItemSettings({
+    openAtLogin: autoStart,
+    openAsHidden: true, // Start minimized in background
+    args: ['--hidden'] // Pass argument to indicate hidden start
+  });
+
+  const loginItemSettings = app.getLoginItemSettings();
+  console.log('[autostart] Login item settings:', loginItemSettings);
+}
+
 // App event handlers
 app.whenReady().then(() => {
   // Configure app to start minimized before creating windows
   configureAppForMinimizedStartup();
+
+  // Configure auto-start on login
+  configureAutoStart();
 
   createWindow();
   tray = create_tray(); // Store reference to prevent GC
   loadHistory();
   monitorClipboard();
 
+  // Request macOS permissions if needed
+  requestMacOSPermissions().then((granted) => {
+    if (granted) {
+      console.log('[permissions] All permissions granted');
+    } else {
+      console.warn('[permissions] Some permissions not granted - functionality may be limited');
+    }
+  });
+
   // Start memory monitoring
   startMemoryMonitoring();
-  
+
   // Register global shortcut
   const hotkey = getEffectiveHotkey();
   try {
@@ -1300,7 +1518,7 @@ app.whenReady().then(() => {
         showOverlayWindows();
       }
     });
-    
+
     if (!registered) {
       console.warn(`Failed to register global shortcut: ${hotkey}`);
     } else {
@@ -1309,7 +1527,7 @@ app.whenReady().then(() => {
   } catch (error) {
     console.error(`Error registering hotkey ${hotkey}:`, error);
   }
-  
+
   console.log(`Minimal Clipboard started minimized. Press ${hotkey} to open.`);
 });
 
@@ -1477,12 +1695,12 @@ ipcMain.handle('clear-history', () => {
 });
 
 ipcMain.handle('get-platform', () => {
-    return process.platform;
-  });
+  return process.platform;
+});
 
-  ipcMain.handle('get-data-location', () => {
-    return app.getPath('userData');
-  });
+ipcMain.handle('get-data-location', () => {
+  return app.getPath('userData');
+});
 
 // Hide overlay on outside click from backdrop
 ipcMain.handle('hide-overlay', () => {
@@ -1505,19 +1723,24 @@ ipcMain.handle('get-settings', () => {
   return settings;
 });
 
-ipcMain.handle('update-settings', (event, partial) => {
-  if (!partial || typeof partial !== 'object') return settings;
+ipcMain.handle('save-settings', (event, newSettings) => {
+  console.log('[settings] Saving new settings:', newSettings);
   const prevHotkey = getEffectiveHotkey();
-  settings = Object.assign({}, settings, partial);
+  settings = Object.assign({}, settings, newSettings);
   store.set('settings', settings);
+
+  // Apply auto-start setting
+  if (newSettings.hasOwnProperty('autoStart')) {
+    configureAutoStart();
+  }
 
   // Re-register hotkey if changed
   const newHotkey = getEffectiveHotkey();
   if (newHotkey !== prevHotkey) {
     try {
       globalShortcut.unregister(prevHotkey);
-    } catch (_) {}
-    
+    } catch (_) { }
+
     try {
       const ok = globalShortcut.register(newHotkey, () => {
         if (!mainWindow) return;
@@ -1525,12 +1748,12 @@ ipcMain.handle('update-settings', (event, partial) => {
           hideOverlayWindows();
         } else {
           console.log('Hotkey pressed!');
-          activeWin().then(info => { lastActiveWindow = info; }).catch(()=>{});
+          activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
           sendHistoryToRenderer();
           showOverlayWindows();
         }
       });
-      
+
       if (!ok) {
         console.warn('[settings] Failed to register new hotkey:', newHotkey);
         // Revert to old hotkey
@@ -1541,7 +1764,7 @@ ipcMain.handle('update-settings', (event, partial) => {
               hideOverlayWindows();
             } else {
               console.log('Hotkey pressed!');
-              activeWin().then(info => { lastActiveWindow = info; }).catch(()=>{});
+              activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
               sendHistoryToRenderer();
               showOverlayWindows();
             }
@@ -1560,7 +1783,83 @@ ipcMain.handle('update-settings', (event, partial) => {
             hideOverlayWindows();
           } else {
             console.log('Hotkey pressed!');
-            activeWin().then(info => { lastActiveWindow = info; }).catch(()=>{});
+            activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
+            sendHistoryToRenderer();
+            showOverlayWindows();
+          }
+        });
+      } catch (revertError) {
+        console.error('[settings] Failed to revert to old hotkey:', revertError);
+      }
+    }
+  }
+
+  // Trim history if max reduced
+  if (clipboardHistory.length > getMaxHistory()) {
+    const toRemove = clipboardHistory.slice(getMaxHistory());
+    toRemove.forEach(i => { if (i.type === 'image' && i.filePath) deleteFileQuiet(i.filePath); });
+    clipboardHistory = clipboardHistory.slice(0, getMaxHistory());
+  }
+
+  return settings;
+});
+
+ipcMain.handle('update-settings', (event, partial) => {
+  if (!partial || typeof partial !== 'object') return settings;
+  const prevHotkey = getEffectiveHotkey();
+  settings = Object.assign({}, settings, partial);
+  store.set('settings', settings);
+
+  // Re-register hotkey if changed
+  const newHotkey = getEffectiveHotkey();
+  if (newHotkey !== prevHotkey) {
+    try {
+      globalShortcut.unregister(prevHotkey);
+    } catch (_) { }
+
+    try {
+      const ok = globalShortcut.register(newHotkey, () => {
+        if (!mainWindow) return;
+        if (mainWindow.isVisible()) {
+          hideOverlayWindows();
+        } else {
+          console.log('Hotkey pressed!');
+          activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
+          sendHistoryToRenderer();
+          showOverlayWindows();
+        }
+      });
+
+      if (!ok) {
+        console.warn('[settings] Failed to register new hotkey:', newHotkey);
+        // Revert to old hotkey
+        try {
+          globalShortcut.register(prevHotkey, () => {
+            if (!mainWindow) return;
+            if (mainWindow.isVisible()) {
+              hideOverlayWindows();
+            } else {
+              console.log('Hotkey pressed!');
+              activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
+              sendHistoryToRenderer();
+              showOverlayWindows();
+            }
+          });
+        } catch (revertError) {
+          console.error('[settings] Failed to revert to old hotkey:', revertError);
+        }
+      }
+    } catch (error) {
+      console.error('[settings] Error registering hotkey:', newHotkey, error);
+      // Revert to old hotkey
+      try {
+        globalShortcut.register(prevHotkey, () => {
+          if (!mainWindow) return;
+          if (mainWindow.isVisible()) {
+            hideOverlayWindows();
+          } else {
+            console.log('Hotkey pressed!');
+            activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
             sendHistoryToRenderer();
             showOverlayWindows();
           }

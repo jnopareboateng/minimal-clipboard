@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -28,11 +29,26 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      -webkit-app-region: drag;
+      gap: 12px;
       -webkit-user-select: none;
       user-select: none;
       position: relative;
       z-index: 0;
+    }
+
+    .drag-handle {
+      flex: 1;
+      min-width: 40px;
+      height: 32px;
+      -webkit-app-region: drag;
+      cursor: move;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .drag-handle:hover {
+      opacity: 0.8;
     }
 
     .actions {
@@ -42,7 +58,6 @@
       gap: 8px;
       align-items: center;
       -webkit-app-region: no-drag;
-      width: 100%;
     }
 
     .title {
@@ -178,10 +193,17 @@
     .clipboard-thumb {
       display: block;
       max-width: 100%;
-      max-height: 140px;
-      border-radius: 6px;
+      max-height: 160px;
+      border-radius: 8px;
       margin-bottom: 8px;
-      box-shadow: 0 0 0 1px rgba(255,255,255,0.06) inset;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    .clipboard-thumb:hover {
+      transform: scale(1.02);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.12) inset;
     }
 
     .clipboard-item:hover {
@@ -232,6 +254,44 @@
       font-size: 12px;
     }
 
+    /* File type badges */
+    .file-type-badge {
+      display: inline-block;
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-right: 6px;
+      letter-spacing: 0.5px;
+    }
+
+    .badge-image {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+    }
+
+    .badge-text {
+      background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+      color: #fff;
+    }
+
+    .badge-code {
+      background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+      color: #000;
+    }
+
+    .clipboard-item-content {
+      position: relative;
+    }
+
+    .clipboard-meta {
+      display: flex;
+      align-items: center;
+      margin-top: 6px;
+      gap: 8px;
+    }
+
     /* While modal is open, disable interactions below and ensure no drag region interferes */
     body.modal-open .header,
     body.modal-open .clipboard-list {
@@ -245,11 +305,16 @@
     }
   </style>
 </head>
+
 <body>
   <div class="header">
-    <div class="actions">
-      <input type="text" id="search" placeholder="Search..." style="height:22px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.2);color:#ddd;min-width:140px;">
+    <div class="drag-handle">
+      <span style="font-size:12px;color:#666;">📋</span>
       <span class="hotkey" id="hotkey-display">Ctrl+Shift+V</span>
+    </div>
+    <div class="actions">
+      <input type="text" id="search" placeholder="Search..."
+        style="height:22px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(0,0,0,0.2);color:#ddd;min-width:140px;">
       <button class="icon-btn" onclick="openSettings()" title="Settings" aria-label="Settings">⚙</button>
       <button class="clear-btn" onclick="clearHistory()" title="Clear history" aria-label="Clear history">🗑️</button>
     </div>
@@ -263,15 +328,20 @@
   </div>
 
   <!-- Settings Modal -->
-  <div id="settings-modal" style="position:fixed;inset:0;display:none;align-items:flex-start;justify-content:center;background:rgba(0,0,0,0.5);-webkit-app-region:no-drag;overflow:auto;z-index:999999;">
-    <div style="width:340px;background:#222;border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:16px;color:#ddd;margin:40px 0;position:relative;z-index:1000000;">
+  <div id="settings-modal"
+    style="position:fixed;inset:0;display:none;align-items:flex-start;justify-content:center;background:rgba(0,0,0,0.5);-webkit-app-region:no-drag;overflow:auto;z-index:999999;">
+    <div
+      style="width:340px;background:#222;border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:16px;color:#ddd;margin:40px 0;position:relative;z-index:1000000;">
       <div style="font-size:13px;margin-bottom:8px;color:#aaa;">Settings</div>
       <label style="display:block;font-size:12px;margin:8px 0 4px;">Max history</label>
-      <input id="set-max-history" type="number" min="5" max="200" step="1" style="width:100%;height:28px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;">
+      <input id="set-max-history" type="number" min="5" max="200" step="1"
+        style="width:100%;height:28px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;">
       <label style="display:block;font-size:12px;margin:8px 0 4px;">Thumbnail width (px)</label>
-      <input id="set-thumb-width" type="number" min="60" max="600" step="10" style="width:100%;height:28px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;">
+      <input id="set-thumb-width" type="number" min="60" max="600" step="10"
+        style="width:100%;height:28px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;">
       <label style="display:block;font-size:12px;margin:8px 0 4px;">Single-click action</label>
-      <select id="set-single-click" style="width:100%;height:28px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;">
+      <select id="set-single-click"
+        style="width:100%;height:28px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;">
         <option value="copy">Copy</option>
         <option value="paste">Paste</option>
         <option value="none">None</option>
@@ -279,20 +349,30 @@
       <label style="display:block;font-size:12px;margin:8px 0 4px;">
         <input id="set-remember-pos" type="checkbox"> Remember window position
       </label>
+      <label style="display:block;font-size:12px;margin:8px 0 4px;">
+        <input id="set-auto-start" type="checkbox"> Start at login
+      </label>
       <label style="display:block;font-size:12px;margin:8px 0 4px;">Hotkey</label>
       <div style="display:flex;gap:8px;align-items:center;">
-        <input id="set-hotkey" type="text" readonly placeholder="Click to set hotkey" style="flex:1;height:28px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;cursor:pointer;">
-        <button id="reset-hotkey" type="button" style="height:28px;padding:0 12px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#333;color:#ddd;cursor:pointer;font-size:11px;">Reset</button>
+        <input id="set-hotkey" type="text" readonly placeholder="Click to set hotkey"
+          style="flex:1;height:28px;padding:0 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#111;color:#ddd;cursor:pointer;">
+        <button id="reset-hotkey" type="button"
+          style="height:28px;padding:0 12px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:#333;color:#ddd;cursor:pointer;font-size:11px;">Reset</button>
       </div>
-      <div id="hotkey-help" style="font-size:10px;color:#666;margin-top:2px;">Default: <span id="default-hotkey">Ctrl+Shift+V</span></div>
-       
-       <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);">
-         <div style="font-size:11px;color:#888;margin-bottom:4px;">Data Storage Location:</div>
-         <div id="data-location" style="font-size:10px;color:#666;word-break:break-all;background:#111;padding:4px 6px;border-radius:3px;font-family:monospace;">Loading...</div>
-       </div>
-       
-       <button class="clear-btn" onclick="clearHistory(); closeSettings();" style="margin-top:12px;color:#ff6b6b;">Clear history</button>
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;position:sticky;bottom:0;background:#222;padding-top:8px;">
+      <div id="hotkey-help" style="font-size:10px;color:#666;margin-top:2px;">Default: <span
+          id="default-hotkey">Ctrl+Shift+V</span></div>
+
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);">
+        <div style="font-size:11px;color:#888;margin-bottom:4px;">Data Storage Location:</div>
+        <div id="data-location"
+          style="font-size:10px;color:#666;word-break:break-all;background:#111;padding:4px 6px;border-radius:3px;font-family:monospace;">
+          Loading...</div>
+      </div>
+
+      <button class="clear-btn" onclick="clearHistory(); closeSettings();" style="margin-top:12px;color:#ff6b6b;">Clear
+        history</button>
+      <div
+        style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;position:sticky;bottom:0;background:#222;padding-top:8px;">
         <button class="clear-btn" onclick="closeSettings()">Cancel</button>
         <button class="clear-btn" onclick="saveSettings()">Save</button>
       </div>
@@ -486,17 +566,36 @@
         }
 
         itemDiv.innerHTML = `
-          ${img.outerHTML}
-          <div class="clipboard-time">${dims ? dims + ' • ' : ''}${timeAgo(item.timestamp)}</div>
+          <div class="clipboard-item-content">
+            ${img.outerHTML}
+            <div class="clipboard-meta">
+              <span class="file-type-badge badge-image">📷 Image</span>
+              <span class="clipboard-time">${dims ? dims + ' • ' : ''}${timeAgo(item.timestamp)}</span>
+            </div>
+          </div>
         `;
       } else {
-        const safeText = (item.text || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const dataAttr = (item.text || '').replace(/"/g, '&quot;');
+        // Detect if content is likely code
+        const text = item.text || '';
+        const isCode = /^(\s*[\{\[\(]|function |const |let |var |import |export |class |def |public |private |<\?php|SELECT |UPDATE )/m.test(text) ||
+          text.includes('=>') ||
+          (text.includes('{') && text.includes('}') && text.includes(';'));
+
+        const safeText = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const dataAttr = text.replace(/"/g, '&quot;');
+        const badgeClass = isCode ? 'badge-code' : 'badge-text';
+        const badgeLabel = isCode ? '💻 Code' : '📝 Text';
+
         itemDiv.setAttribute('data-type', 'text');
         itemDiv.setAttribute('data-text', dataAttr);
         itemDiv.innerHTML = `
-          <div class="clipboard-text">${safeText}</div>
-          <div class="clipboard-time">${timeAgo(item.timestamp)}</div>
+          <div class="clipboard-item-content">
+            <div class="clipboard-text">${safeText}</div>
+            <div class="clipboard-meta">
+              <span class="file-type-badge ${badgeClass}">${badgeLabel}</span>
+              <span class="clipboard-time">${timeAgo(item.timestamp)}</span>
+            </div>
+          </div>
         `;
       }
 
@@ -711,21 +810,22 @@
       settings = await ipcRenderer.invoke('get-settings');
       const platform = await ipcRenderer.invoke('get-platform');
       const dataLocation = await ipcRenderer.invoke('get-data-location');
-      
+
       document.getElementById('set-max-history').value = settings.maxHistory;
       document.getElementById('set-thumb-width').value = settings.thumbWidth;
       document.getElementById('set-single-click').value = settings.singleClickAction || 'copy';
       document.getElementById('set-remember-pos').checked = !!settings.rememberPosition;
-      
+      document.getElementById('set-auto-start').checked = settings.autoStart !== false;
+
       // Set platform-specific default hotkey
       const defaultHotkey = platform === 'darwin' ? 'Cmd+Shift+V' : 'Ctrl+Shift+V';
       document.getElementById('default-hotkey').textContent = defaultHotkey;
-      
+
       // Show current hotkey or default
       const currentHotkey = await ipcRenderer.invoke('get-hotkey');
       document.getElementById('set-hotkey').value = currentHotkey;
       document.getElementById('set-hotkey').placeholder = `Click to set (default: ${defaultHotkey})`;
-      
+
       // Show data storage location
       document.getElementById('data-location').textContent = dataLocation;
     }
@@ -735,23 +835,23 @@
     let isCapturingHotkey = false;
     const hotkeyInput = document.getElementById('set-hotkey');
     const resetHotkeyBtn = document.getElementById('reset-hotkey');
-    
+
     hotkeyInput.addEventListener('click', () => {
       if (isCapturingHotkey) return;
       isCapturingHotkey = true;
       hotkeyInput.value = 'Press keys...';
       hotkeyInput.style.background = '#2a4a2a';
     });
-    
+
     hotkeyInput.addEventListener('keydown', (e) => {
       if (!isCapturingHotkey) return;
       e.preventDefault();
-      
+
       const keys = [];
       if (e.ctrlKey || e.metaKey) keys.push(e.metaKey ? 'Cmd' : 'Ctrl');
       if (e.altKey) keys.push('Alt');
       if (e.shiftKey) keys.push('Shift');
-      
+
       // Only allow valid keys for Electron globalShortcut
       const validKeys = {
         'Enter': 'Return',
@@ -761,10 +861,10 @@
         'ArrowLeft': 'Left',
         'ArrowRight': 'Right'
       };
-      
+
       if (e.key && !['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) {
         let keyName = e.key;
-        
+
         // Map special keys
         if (validKeys[e.key]) {
           keyName = validKeys[e.key];
@@ -779,16 +879,16 @@
           }, 1000);
           return;
         }
-        
+
         keys.push(keyName);
-        
+
         const hotkey = keys.join('+');
         hotkeyInput.value = hotkey;
         hotkeyInput.style.background = '#111';
         isCapturingHotkey = false;
       }
     });
-    
+
     resetHotkeyBtn.addEventListener('click', async () => {
       const platform = await ipcRenderer.invoke('get-platform');
       const defaultHotkey = platform === 'darwin' ? 'Cmd+Shift+V' : 'Ctrl+Shift+V';
@@ -798,29 +898,30 @@
     });
 
     // Settings modal controls
-    window.openSettings = function() {
+    window.openSettings = function () {
       const modal = document.getElementById('settings-modal');
       modal.style.display = 'flex';
       modal.scrollTop = 0; // ensure top is visible even when search scrolled the list
       document.body.classList.add('modal-open');
     }
-    window.closeSettings = function() {
+    window.closeSettings = function () {
       document.getElementById('settings-modal').style.display = 'none';
       document.body.classList.remove('modal-open');
     }
-    window.saveSettings = async function() {
-      const partial = {
-        maxHistory: Number(document.getElementById('set-max-history').value),
-        thumbWidth: Number(document.getElementById('set-thumb-width').value),
+    window.saveSettings = async function () {
+      await ipcRenderer.invoke('save-settings', {
+        maxHistory: parseInt(document.getElementById('set-max-history').value),
+        thumbWidth: parseInt(document.getElementById('set-thumb-width').value),
         singleClickAction: document.getElementById('set-single-click').value,
         rememberPosition: document.getElementById('set-remember-pos').checked,
-        hotkey: (document.getElementById('set-hotkey').value || '').trim() || null
-      };
-      settings = await ipcRenderer.invoke('update-settings', partial);
+        autoStart: document.getElementById('set-auto-start').checked,
+        hotkey: document.getElementById('set-hotkey').value || null
+      });
       const hotkey = await ipcRenderer.invoke('get-hotkey');
       document.getElementById('hotkey-display').textContent = hotkey || 'Ctrl+Shift+V';
       closeSettings();
     }
   </script>
 </body>
+
 </html>
