@@ -1,9 +1,8 @@
-const { app, BrowserWindow, globalShortcut, clipboard, ipcMain, screen, nativeImage, Tray, Menu, systemPreferences } = require('electron');
+const { app, BrowserWindow, globalShortcut, clipboard, ipcMain, screen, nativeImage, Tray, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
 const robot = require('@evgenonyskiv/robotjs'); // added for simulating paste keystroke
-const activeWin = require('active-win'); // diagnostics & focus tracking
 const { spawn } = require('child_process');
 
 // Simple text compression using built-in zlib (no native dependencies)
@@ -30,12 +29,12 @@ const store = new Store();
 // Check for command line arguments
 const args = process.argv.slice(1);
 const startMinimized = args.includes('--minimized') || args.includes('--hidden');
+const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 
 // Settings and defaults
 const DEFAULT_SETTINGS = {
   maxHistory: 20,
   thumbWidth: 320,
-  singleClickAction: 'copy', // 'copy' | 'paste' | 'none'
   rememberPosition: true,
   hotkey: null, // null means use platform default
   autoStart: true // Auto-start on system login
@@ -203,125 +202,6 @@ function monitorMemoryUsage() {
   }
 }
 
-// macOS Permissions Management
-let permissionsChecked = false;
-let hasAccessibilityPermission = false;
-let hasScreenRecordingPermission = false;
-
-/**
- * Check macOS permissions status without triggering prompts
- */
-function checkMacOSPermissions() {
-  if (process.platform !== 'darwin') {
-    return { accessibility: true, screenRecording: true };
-  }
-
-  // Check accessibility permission
-  const accessibilityStatus = systemPreferences.isTrustedAccessibilityClient(false);
-
-  // Check screen recording permission (available in Electron 9+)
-  let screenRecordingStatus = true;
-  if (systemPreferences.getMediaAccessStatus) {
-    try {
-      screenRecordingStatus = systemPreferences.getMediaAccessStatus('screen') === 'granted';
-    } catch (error) {
-      console.warn('[permissions] Could not check screen recording status:', error.message);
-    }
-  }
-
-  hasAccessibilityPermission = accessibilityStatus;
-  hasScreenRecordingPermission = screenRecordingStatus;
-
-  console.log('[permissions] Status check:', {
-    accessibility: hasAccessibilityPermission,
-    screenRecording: hasScreenRecordingPermission
-  });
-
-  return {
-    accessibility: hasAccessibilityPermission,
-    screenRecording: hasScreenRecordingPermission
-  };
-}
-
-/**
- * Request macOS permissions with user-friendly dialogs
- * Only prompts if permissions are not yet granted
- */
-async function requestMacOSPermissions() {
-  if (process.platform !== 'darwin') {
-    return true;
-  }
-
-  // Skip if already checked this session
-  if (permissionsChecked) {
-    console.log('[permissions] Already checked this session, skipping');
-    return hasAccessibilityPermission && hasScreenRecordingPermission;
-  }
-
-  const status = checkMacOSPermissions();
-  permissionsChecked = true;
-
-  // If both permissions are already granted, no need to prompt
-  if (status.accessibility && status.screenRecording) {
-    console.log('[permissions] All permissions already granted');
-    return true;
-  }
-
-  console.log('[permissions] Requesting missing permissions...');
-
-  // Request accessibility permission if needed
-  if (!status.accessibility) {
-    const { dialog } = require('electron');
-    await dialog.showMessageBox({
-      type: 'info',
-      title: 'Accessibility Permission Required',
-      message: 'Minimal Clipboard needs Accessibility permission',
-      detail: 'This permission is required to:\n• Simulate keyboard shortcuts for pasting\n• Monitor clipboard changes\n\nPlease grant access in System Settings → Privacy & Security → Accessibility',
-      buttons: ['Open System Settings', 'Later']
-    }).then((result) => {
-      if (result.response === 0) {
-        // Open System Settings
-        const { shell } = require('electron');
-        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
-      }
-    });
-
-    // Trigger the actual permission request
-    systemPreferences.isTrustedAccessibilityClient(true);
-  }
-
-  // Request screen recording permission if needed (for active-win package)
-  if (!status.screenRecording && systemPreferences.askForMediaAccess) {
-    try {
-      await systemPreferences.askForMediaAccess('screen');
-      console.log('[permissions] Screen recording permission requested');
-    } catch (error) {
-      console.warn('[permissions] Could not request screen recording:', error.message);
-    }
-  }
-
-  // Re-check after requests
-  const finalStatus = checkMacOSPermissions();
-  return finalStatus.accessibility && finalStatus.screenRecording;
-}
-
-/**
- * Wrapper for robot.js calls that checks permissions first
- */
-function safeKeyTap(...args) {
-  if (process.platform === 'darwin' && !hasAccessibilityPermission) {
-    console.warn('[permissions] Cannot simulate keystroke - accessibility permission not granted');
-    return false;
-  }
-
-  try {
-    robot.keyTap(...args);
-    return true;
-  } catch (error) {
-    console.error('[permissions] Failed to simulate keystroke:', error.message);
-    return false;
-  }
-}
 
 // Reset invalid hotkey to empty string (will use default)
 if (settings.hotkey && !/^[\x00-\x7F]*$/.test(settings.hotkey)) {
@@ -341,9 +221,6 @@ function getMaxHistory() {
   const v = Number(settings.maxHistory);
   return Number.isFinite(v) && v > 0 ? Math.floor(v) : DEFAULT_SETTINGS.maxHistory;
 }
-let lastActiveWindow = null; // store window info before overlay shows
-let pasteSessionCompleted = false; // guard to prevent repeated pastes
-
 // Track pending paste retry timers so we can cancel if needed
 let pendingPasteTimers = [];
 let clipboardMonitorInterval = null;
@@ -504,12 +381,8 @@ function simulatePasteKeystroke(attempt, totalAttempts) {
   try {
     const platform = process.platform;
     const modifier = platform === 'darwin' ? 'command' : 'control';
-    const success = safeKeyTap('v', modifier);
-    if (success) {
-      console.log(`[paste] Sent keystroke attempt ${attempt + 1}/${totalAttempts}`);
-    } else {
-      console.warn(`[paste] Keystroke attempt ${attempt + 1}/${totalAttempts} skipped - no permissions`);
-    }
+    robot.keyTap('v', modifier);
+    console.log(`[paste] Sent keystroke attempt ${attempt + 1}/${totalAttempts}`);
   } catch (e) {
     console.error('[paste] Failed to simulate keystroke attempt', attempt + 1, e?.message || e);
   }
@@ -560,15 +433,6 @@ function schedulePasteRetries() {
     pendingPasteTimers.push(fallbackTimer);
   }
 
-  // Diagnostic: log active window after some key timepoints
-  [120, 300, 600, 900].forEach(t => {
-    const diagTimer = setTimeout(() => {
-      activeWin().then(info => {
-        console.log(`[focus] t+${t}ms active window:`, info ? `${info.owner.name} | ${info.title}` : 'unknown');
-      }).catch(() => { });
-    }, t);
-    pendingPasteTimers.push(diagTimer);
-  });
 }
 
 // Platform-specific default hotkey
@@ -844,6 +708,7 @@ const createWindow = () => {
     skipTaskbar: true,
     resizable: false,
     transparent: true,
+    backgroundColor: '#00000000',
     focusable: true,
     movable: false,
     fullscreenable: false,
@@ -857,6 +722,7 @@ const createWindow = () => {
   });
 
   try { backdropWindow.setAlwaysOnTop(true, 'floating'); } catch (_) { }
+  try { backdropWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (_) { }
   backdropWindow.loadFile(path.join(__dirname, 'backdrop.html'));
 
   // Create the visible overlay window
@@ -872,8 +738,8 @@ const createWindow = () => {
   }
 
   mainWindow = new BrowserWindow({
-    width: 400,
-    height: 500,
+    width: 360,
+    height: 480,
     x: startX,  // Position near right edge (or restored)
     y: startY,
     show: false,
@@ -894,7 +760,8 @@ const createWindow = () => {
       enableRemoteModule: false
     }
   });
-  try { mainWindow.setAlwaysOnTop(true, 'screen-saver'); } catch (_) { }
+  try { mainWindow.setAlwaysOnTop(true, 'status'); } catch (_) { }
+  try { mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (_) { }
 
   // Configure windows to be minimized/hidden across all platforms
   if (process.platform === 'win32') {
@@ -914,7 +781,11 @@ const createWindow = () => {
     } catch (_) { }
   }
 
-  mainWindow.loadFile(path.join(__dirname, 'renderer.html'));
+  if (devServerUrl) {
+    mainWindow.loadURL(devServerUrl);
+  } else {
+    mainWindow.loadFile(path.join(__dirname, 'renderer-dist', 'index.html'));
+  }
   // Open DevTools for debugging
   // mainWindow.webContents.openDevTools({ mode: 'detach' });
 
@@ -1483,15 +1354,6 @@ app.whenReady().then(() => {
   loadHistory();
   monitorClipboard();
 
-  // Request macOS permissions if needed
-  requestMacOSPermissions().then((granted) => {
-    if (granted) {
-      console.log('[permissions] All permissions granted');
-    } else {
-      console.warn('[permissions] Some permissions not granted - functionality may be limited');
-    }
-  });
-
   // Start memory monitoring
   startMemoryMonitoring();
 
@@ -1505,14 +1367,6 @@ app.whenReady().then(() => {
         console.log('Hiding window');
         hideOverlayWindows();
       } else {
-        activeWin().then(info => {
-          lastActiveWindow = info;
-          console.log('[focus] Captured last active window:', info ? `${info.owner.name} | ${info.title}` : 'unknown');
-        }).catch(e => {
-          const summary = (e && (e.stdout || e.message)) ? (e.stdout || e.message) : String(e);
-          const trimmed = typeof summary === 'string' && summary.trim ? summary.trim() : summary;
-          console.warn('[focus] Failed to get active window:', trimmed);
-        });
         console.log('Showing window');
         sendHistoryToRenderer();
         showOverlayWindows();
@@ -1614,8 +1468,6 @@ ipcMain.handle('paste-item', (event, payload) => {
       return false;
     }
   }
-  pasteSessionCompleted = false; // reset guard for new session
-
   // Hide our overlay FIRST so the previously focused app regains focus.
   //    (Original order sent the key stroke while our window still had focus.)
   // Hide overlay (both windows) so that previous app regains focus
@@ -1748,7 +1600,6 @@ ipcMain.handle('save-settings', (event, newSettings) => {
           hideOverlayWindows();
         } else {
           console.log('Hotkey pressed!');
-          activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
           sendHistoryToRenderer();
           showOverlayWindows();
         }
@@ -1764,7 +1615,6 @@ ipcMain.handle('save-settings', (event, newSettings) => {
               hideOverlayWindows();
             } else {
               console.log('Hotkey pressed!');
-              activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
               sendHistoryToRenderer();
               showOverlayWindows();
             }
@@ -1783,7 +1633,6 @@ ipcMain.handle('save-settings', (event, newSettings) => {
             hideOverlayWindows();
           } else {
             console.log('Hotkey pressed!');
-            activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
             sendHistoryToRenderer();
             showOverlayWindows();
           }
@@ -1824,7 +1673,6 @@ ipcMain.handle('update-settings', (event, partial) => {
           hideOverlayWindows();
         } else {
           console.log('Hotkey pressed!');
-          activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
           sendHistoryToRenderer();
           showOverlayWindows();
         }
@@ -1840,7 +1688,6 @@ ipcMain.handle('update-settings', (event, partial) => {
               hideOverlayWindows();
             } else {
               console.log('Hotkey pressed!');
-              activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
               sendHistoryToRenderer();
               showOverlayWindows();
             }
@@ -1859,7 +1706,6 @@ ipcMain.handle('update-settings', (event, partial) => {
             hideOverlayWindows();
           } else {
             console.log('Hotkey pressed!');
-            activeWin().then(info => { lastActiveWindow = info; }).catch(() => { });
             sendHistoryToRenderer();
             showOverlayWindows();
           }

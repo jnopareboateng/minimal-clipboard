@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Backdrop</title>
+    <style>
+      html, body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: rgba(8, 10, 14, 0.32);
+        backdrop-filter: blur(6px) saturate(1.1);
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      const { ipcRenderer } = require('electron');
+      window.addEventListener('mousedown', () => {
+        ipcRenderer.invoke('hide-overlay');
+      });
+    </script>
+  </body>
+</html>

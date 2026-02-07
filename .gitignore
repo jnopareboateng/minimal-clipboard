@@ -15,6 +15,7 @@ Thumbs.db
 # Build output
 dist/
 build/
+src/renderer-dist/
 # VS Code settings
 .vscode/
 # Misc
@@ -31,3 +32,4 @@ coverage/
 next-env.d.ts
 .mailmap
 docs/
+audio-trimmer.py

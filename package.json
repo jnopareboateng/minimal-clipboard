@@ -4,13 +4,14 @@
   "description": "A minimalist cross-platform clipboard manager",
   "main": "src/main.js",
   "scripts": {
-    "start": "electron .",
-    "build": "electron-builder",
-    "build:mac": "electron-builder --mac",
-    "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux",
-    "build:all": "electron-builder --mac --win --linux",
-    "dev": "electron . --dev",
+    "start": "npm run build:renderer && electron .",
+    "build:renderer": "vite build",
+    "build": "npm run build:renderer && electron-builder",
+    "build:mac": "npm run build:renderer && electron-builder --mac",
+    "build:win": "npm run build:renderer && electron-builder --win",
+    "build:linux": "npm run build:renderer && electron-builder --linux",
+    "build:all": "npm run build:renderer && electron-builder --mac --win --linux",
+    "dev": "concurrently -k \"VITE_DEV_SERVER_URL=http://localhost:5173 vite\" \"VITE_DEV_SERVER_URL=http://localhost:5173 electron . --dev\"",
     "release:patch": "npm version patch && git push && git push --tags",
     "release:minor": "npm version minor && git push && git push --tags",
     "release:major": "npm version major && git push && git push --tags"
@@ -24,13 +25,21 @@
   "author": "Joshua Opare-Boateng",
   "license": "MIT",
   "devDependencies": {
+    "@types/react": "^18.2.74",
+    "@types/react-dom": "^18.2.24",
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
     "electron": "^27.0.0",
-    "electron-builder": "^24.6.4"
+    "electron-builder": "^24.6.4",
+    "node-gyp": "^9.4.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.8"
   },
   "dependencies": {
     "@evgenonyskiv/robotjs": "^0.6.48",
-    "active-win": "^8.2.1",
-    "electron-store": "^8.1.0"
+    "electron-store": "^8.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   },
   "build": {
     "appId": "com.jnopareboateng.minimal-clipboard",
